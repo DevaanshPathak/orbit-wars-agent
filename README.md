@@ -1,4 +1,4 @@
-# Orbit Wars v0 Heuristic Agent
+# Orbit Wars v1 Heuristic Agent
 
 This repository contains a single-file Orbit Wars Kaggle agent in `main.py`.
 
@@ -16,22 +16,23 @@ Run one sanity-check game:
 python main.py
 ```
 
-Run a small local benchmark against `random`:
+Run local benchmarks:
 
 ```bash
 python test_local.py
+python test_local.py --games 10 --baselines random nearest starter --four-player
 ```
 
 ## Submit
 
 ```bash
-kaggle competitions submit orbit-wars -f main.py -m "v0 heuristic baseline"
+kaggle competitions submit orbit-wars -f main.py -m "v1 ledger heuristic baseline"
 ```
 
-## What v0 does
+## What v1 does
 
-v0 is a pure-heuristic baseline. It predicts rotating planet positions from `initial_planets`, leads targets with an iterative intercept solver, avoids firing through the sun, sizes long-distance fleets larger to exploit the log speed curve, defends threatened planets, captures efficient neutrals, opportunistically contests weak comets, and attacks high-production enemy planets when enough spare ships are available.
+v1 is still pure stdlib heuristics, but it adds a per-turn `GameState`, a 120-turn arrival ledger, and 1-ply candidate scoring. It predicts rotating planet and comet positions, estimates existing fleet arrivals, projects future garrisons and owner flips, then scores defense, expansion, comet, and attack candidates before launching.
 
-## What v1 should add
+## What v2 should add
 
-v1 should replace the target scoring with a stronger evaluation function, add a shallow one-ply outcome simulation for launches and arrivals, improve coordinated multi-source attacks, and add replay/log analysis tooling for tuning constants by map phase.
+v2 should add replay-driven tuning, stronger opponent pressure modeling, better multi-wave attack timing, and a compact opening book derived from local self-play.

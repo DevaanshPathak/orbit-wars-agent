@@ -1,4 +1,5 @@
 import math
+from collections import namedtuple
 
 from kaggle_environments.envs.orbit_wars.orbit_wars import Fleet, Planet
 
@@ -11,10 +12,19 @@ ROTATION_RADIUS_LIMIT = 50.0
 MAX_FLEET_SPEED = 6.0
 
 CAPTURE_BUFFER = 3
-MAX_ETA = 95
-MAX_MOVES = 12
+LEDGER_HORIZON = 120
+DEFENSE_HORIZON = 42
+MAX_ETA = 115
+MAX_MOVES = 14
+ENDGAME_STEP = 430
+
+Candidate = namedtuple(
+    "Candidate",
+    ["kind", "score", "target_id", "parts", "eta", "ships", "reason"],
+)
 
 _OBS_CACHE = {}
+_CURRENT_STATE = None
 
 
 def obs_get(obs, key, default=None):
@@ -101,7 +111,11 @@ def _initial_planet_by_id(obs, planet_id):
     if cache is not None:
         return cache["initial_by_id"].get(planet_id)
     return next(
-        (Planet(*raw) for raw in obs_get(obs, "initial_planets", []) if raw[0] == planet_id),
+        (
+            Planet(*raw)
+            for raw in obs_get(obs, "initial_planets", [])
+            if raw[0] == planet_id
+        ),
         None,
     )
 
@@ -172,31 +186,17 @@ def _sun_safe_angle(source_xy, target_xy, target_radius):
     if base_dist <= 1e-9:
         return None
 
-    # If the planet's near edge is visible around the sun, aim at that edge.
-    offsets = []
-    for mult in (0.7, 1.0, 1.3):
-        offsets.extend((target_radius * mult, -target_radius * mult))
-    for offset in offsets:
-        perp = direct_angle + math.pi / 2.0
-        aim = (
-            target_xy[0] + math.cos(perp) * offset,
-            target_xy[1] + math.sin(perp) * offset,
-        )
-        if not path_crosses_sun(source_xy, aim):
-            return math.atan2(aim[1] - source_xy[1], aim[0] - source_xy[0]), aim
+    # Aim at the target disk's visible edge instead of nudging blindly.
+    for mult in (0.55, 0.8, 1.05, 1.3):
+        for sign in (1.0, -1.0):
+            perp = direct_angle + sign * math.pi / 2.0
+            aim = (
+                target_xy[0] + math.cos(perp) * target_radius * mult,
+                target_xy[1] + math.sin(perp) * target_radius * mult,
+            )
+            if not path_crosses_sun(source_xy, aim):
+                return math.atan2(aim[1] - source_xy[1], aim[0] - source_xy[0]), aim
 
-    # Last-ditch small deflections. These only work when the target disk is wide
-    # enough to absorb the miss, so verify closest approach to the target body.
-    for degrees in (5, -5, 10, -10, 15, -15, 22, -22):
-        angle = direct_angle + math.radians(degrees)
-        end = (
-            source_xy[0] + math.cos(angle) * base_dist,
-            source_xy[1] + math.sin(angle) * base_dist,
-        )
-        if path_crosses_sun(source_xy, end):
-            continue
-        if point_to_segment_distance(target_xy, source_xy, end) <= target_radius * 0.85:
-            return angle, end
     return None
 
 
@@ -212,7 +212,9 @@ def solve_intercept_angle(source_xy, target_planet_id, num_ships, current_step, 
 
     eta = max(1.0, dist(source_xy, target_xy) / speed)
     for _ in range(5):
-        target_xy = _target_position(target_planet_id, current_step, current_step + eta, obs)
+        target_xy = _target_position(
+            target_planet_id, current_step, current_step + eta, obs
+        )
         if target_xy is None:
             return None
         eta = max(1.0, dist(source_xy, target_xy) / speed)
@@ -259,11 +261,542 @@ def _fleet_arrival_eta(fleet, target_planet, current_step, obs, max_turns=MAX_ET
     return None
 
 
+def _resolve_combat(owner, garrison, arrivals):
+    if not arrivals:
+        return owner, garrison
+
+    sorted_forces = sorted(arrivals.items(), key=lambda item: item[1], reverse=True)
+    top_owner, top_ships = sorted_forces[0]
+    survivor_owner = top_owner
+    survivor_ships = top_ships
+    if len(sorted_forces) > 1:
+        second_ships = sorted_forces[1][1]
+        if top_ships == second_ships:
+            survivor_ships = 0
+        else:
+            survivor_ships = top_ships - second_ships
+
+    if survivor_ships <= 0:
+        return owner, garrison
+    if survivor_owner == owner:
+        return owner, garrison + survivor_ships
+
+    garrison -= survivor_ships
+    if garrison < 0:
+        return survivor_owner, -garrison
+    return owner, garrison
+
+
+class ArrivalLedger:
+    def __init__(self, state):
+        self.state = state
+        self.arrivals = {planet.id: {} for planet in state.planets}
+        self._timelines = {}
+        self._build_existing_arrivals()
+
+    def _build_existing_arrivals(self):
+        for fleet in self.state.fleets:
+            for planet in self.state.planets:
+                eta = _fleet_arrival_eta(
+                    fleet,
+                    planet,
+                    self.state.step,
+                    self.state.obs,
+                    LEDGER_HORIZON,
+                )
+                if eta is None:
+                    continue
+                turn = max(1, int(math.ceil(eta - 0.15)))
+                if turn > LEDGER_HORIZON:
+                    continue
+                by_turn = self.arrivals.setdefault(planet.id, {})
+                by_owner = by_turn.setdefault(turn, {})
+                by_owner[fleet.owner] = by_owner.get(fleet.owner, 0) + fleet.ships
+
+    def timeline(self, planet_id):
+        if planet_id in self._timelines:
+            return self._timelines[planet_id]
+
+        planet = self.state.planet_by_id.get(planet_id)
+        if planet is None:
+            return []
+
+        owner = planet.owner
+        garrison = float(planet.ships)
+        result = [(owner, garrison)]
+        arrivals_by_turn = self.arrivals.get(planet_id, {})
+        for turn in range(1, LEDGER_HORIZON + 1):
+            if owner != -1:
+                garrison += planet.production
+            owner, garrison = _resolve_combat(
+                owner, garrison, arrivals_by_turn.get(turn, {})
+            )
+            result.append((owner, garrison))
+
+        self._timelines[planet_id] = result
+        return result
+
+    def state_at(self, planet_id, turn):
+        timeline = self.timeline(planet_id)
+        if not timeline:
+            return -1, 0.0
+        idx = max(0, min(LEDGER_HORIZON, int(math.ceil(turn))))
+        return timeline[idx]
+
+    def first_not_owned_turn(self, planet_id, owner, horizon=DEFENSE_HORIZON):
+        timeline = self.timeline(planet_id)
+        for turn in range(1, min(horizon, len(timeline) - 1) + 1):
+            if timeline[turn][0] != owner:
+                return turn
+        return None
+
+    def needed_to_capture(self, planet_id, eta, attacker):
+        turn = max(1, int(math.ceil(eta)))
+        owner, garrison = self.state_at(planet_id, turn)
+        if owner == attacker:
+            return 0
+
+        planet = self.state.planet_by_id.get(planet_id)
+        if planet is None:
+            return 10**9
+
+        buffer = CAPTURE_BUFFER
+        if owner != -1:
+            buffer += 2
+        if planet.production >= 4:
+            buffer += 1
+        if self.state.step > ENDGAME_STEP:
+            buffer = max(1, buffer - 2)
+        return max(1, int(math.ceil(garrison + buffer)))
+
+
+class GameState:
+    def __init__(self, obs):
+        _prepare_obs_cache(obs)
+        self.obs = obs
+        self.step = int(obs_get(obs, "step", 0))
+        self.player = obs_get(obs, "player", 0)
+        self.planets = as_planets(obs)
+        self.fleets = as_fleets(obs)
+        cache = _cache_for(obs)
+        self.planet_by_id = cache["planet_by_id"]
+        self.initial_by_id = cache["initial_by_id"]
+        self.comet_ids = cache["comet_ids"]
+
+        self.my_planets = [p for p in self.planets if p.owner == self.player]
+        self.enemy_planets = [p for p in self.planets if p.owner not in (-1, self.player)]
+        self.neutral_planets = [
+            p for p in self.planets if p.owner == -1 and p.id not in self.comet_ids
+        ]
+        self.comet_planets = [p for p in self.planets if p.id in self.comet_ids]
+        self.ledger = ArrivalLedger(self)
+        self.totals = {
+            owner: self._total_ships(owner)
+            for owner in range(4)
+        }
+        self.my_total = self.totals.get(self.player, 0)
+        self.enemy_total = sum(
+            total for owner, total in self.totals.items() if owner != self.player
+        )
+        self.my_production = sum(p.production for p in self.my_planets)
+        self.enemy_production = sum(p.production for p in self.enemy_planets)
+
+    def _total_ships(self, owner):
+        return sum(p.ships for p in self.planets if p.owner == owner) + sum(
+            f.ships for f in self.fleets if f.owner == owner
+        )
+
+    def turns_left(self):
+        return max(0, 499 - self.step)
+
+    def reserve_for(self, planet):
+        if planet.id in self.comet_ids:
+            return 0
+
+        loss_turn = self.ledger.first_not_owned_turn(
+            planet.id, self.player, DEFENSE_HORIZON
+        )
+        if loss_turn is not None and loss_turn <= 8:
+            return 0
+
+        if self.step > ENDGAME_STEP:
+            return 0 if self.my_total <= self.enemy_total * 1.2 else max(1, planet.production)
+
+        if self.step < 35:
+            reserve = max(2, int(planet.production * 1.2))
+        elif self.step < 120:
+            reserve = max(4, int(planet.production * 2.0))
+        else:
+            reserve = max(5, int(planet.production * 2.7))
+
+        if self.my_total > self.enemy_total * 1.7 and self.step > 120:
+            reserve = max(2, reserve // 2)
+        if self.my_production < self.enemy_production and self.step > 150:
+            reserve = max(1, reserve - planet.production)
+        return reserve
+
+    def initial_available(self):
+        return {
+            planet.id: max(0, int(planet.ships - self.reserve_for(planet)))
+            for planet in self.my_planets
+        }
+
+
+def _turn_weight(state, eta):
+    horizon = 85 if state.step < 130 else 120
+    if state.step > ENDGAME_STEP:
+        horizon = state.turns_left()
+    return max(0.0, min(float(horizon), float(state.turns_left()) - eta))
+
+
+def _nearest_owned_distance(state, target):
+    if not state.my_planets:
+        return 999.0
+    return min(dist((p.x, p.y), (target.x, target.y)) for p in state.my_planets)
+
+
+def _send_amount_with_speed_bonus(needed, available, distance_to_target, state):
+    needed = int(max(1, needed))
+    if available < needed:
+        return 0
+    send = needed
+    if distance_to_target > 34:
+        send = max(send, int(needed * 1.16) + 2)
+    if distance_to_target > 52:
+        send = max(send, int(needed * 1.35) + 4)
+    if distance_to_target > 70:
+        send = max(send, int(needed * 1.58) + 6)
+    if state.step < 55 and needed <= 13 and available >= needed + 5:
+        send = max(send, needed + 5)
+    if state.step > ENDGAME_STEP:
+        send = needed
+    return min(available, send)
+
+
+def _candidate_score(state, target, send, eta, kind):
+    turns = _turn_weight(state, eta)
+    owner, garrison = state.ledger.state_at(target.id, eta)
+    if owner == state.player:
+        return -9999.0
+
+    prod_gain = target.production * turns
+    enemy_multiplier = 1.0
+    if owner != -1:
+        enemy_multiplier = 2.1
+    if kind == "comet":
+        enemy_multiplier = 0.55
+        prod_gain = min(prod_gain, 28.0)
+
+    score = prod_gain * enemy_multiplier
+    score += target.production * 13.0
+    score -= send * 0.74
+    score -= eta * 0.42
+    score -= max(0.0, garrison - target.ships) * 0.12
+
+    if target.production >= 4:
+        score += 18.0
+    if state.step < 70 and owner == -1:
+        score += target.production * 7.0
+        score -= target.ships * 0.18
+    if owner not in (-1, state.player):
+        score += target.ships * 0.25
+        if state.my_production < state.enemy_production:
+            score += target.production * 9.0
+    if state.step > ENDGAME_STEP:
+        score = (target.ships * (2.0 if owner != -1 else 0.8)) - send * 0.55
+        score += target.production * 6.0
+        score -= eta * 0.18
+    if target.id in state.comet_ids and eta > 16:
+        score -= 80.0
+    return score
+
+
+def _build_single_capture_candidate(state, target, source, available, kind):
+    source_available = available.get(source.id, 0)
+    if source_available <= 0:
+        return None
+
+    source_xy = (source.x, source.y)
+    distance_to_target = dist(source_xy, (target.x, target.y))
+    probe = max(min(source_available, target.ships + 35), target.ships + CAPTURE_BUFFER)
+    probe = max(1, min(source_available, probe))
+    intercept = solve_intercept_angle(source_xy, target.id, probe, state.step, state.obs)
+    if intercept is None:
+        return None
+
+    angle, eta = intercept
+    if eta > state.turns_left() - 1:
+        return None
+    if kind == "comet" and eta > 18:
+        return None
+
+    needed = state.ledger.needed_to_capture(target.id, eta, state.player)
+    send = _send_amount_with_speed_bonus(needed, source_available, distance_to_target, state)
+    if send < needed:
+        return None
+
+    intercept = solve_intercept_angle(source_xy, target.id, send, state.step, state.obs)
+    if intercept is None:
+        return None
+    angle, eta = intercept
+    if eta > state.turns_left() - 1:
+        return None
+
+    needed = state.ledger.needed_to_capture(target.id, eta, state.player)
+    send = _send_amount_with_speed_bonus(needed, source_available, distance_to_target, state)
+    if send < needed:
+        return None
+
+    score = _candidate_score(state, target, send, eta, kind)
+    return Candidate(kind, score, target.id, ((source.id, angle, send),), eta, send, kind)
+
+
+def _build_multi_attack_candidate(state, target, available):
+    options = []
+    for source in state.my_planets:
+        if available.get(source.id, 0) <= 0:
+            continue
+        source_xy = (source.x, source.y)
+        probe = available[source.id]
+        intercept = solve_intercept_angle(source_xy, target.id, probe, state.step, state.obs)
+        if intercept is None:
+            continue
+        angle, eta = intercept
+        if eta > min(80, state.turns_left() - 1):
+            continue
+        options.append((eta, source.id, angle, available[source.id], source_xy))
+
+    if len(options) < 2:
+        return None
+    options.sort(key=lambda item: item[0])
+
+    best = None
+    for anchor_idx in range(min(3, len(options))):
+        anchor_eta = options[anchor_idx][0]
+        window = [
+            item for item in options if abs(item[0] - anchor_eta) <= 3.5
+        ][:4]
+        if len(window) < 2:
+            continue
+
+        target_eta = max(item[0] for item in window)
+        needed = state.ledger.needed_to_capture(target.id, target_eta, state.player) + 3
+        parts = []
+        committed = 0
+        for eta, source_id, angle, source_available, source_xy in sorted(
+            window, key=lambda item: item[3], reverse=True
+        ):
+            remaining = needed - committed
+            if remaining <= 0:
+                break
+            distance_to_target = dist(source_xy, (target.x, target.y))
+            send = _send_amount_with_speed_bonus(
+                min(remaining, source_available),
+                source_available,
+                distance_to_target,
+                state,
+            )
+            if send <= 0:
+                continue
+            parts.append((source_id, angle, send))
+            committed += send
+
+        if committed < needed:
+            continue
+        score = _candidate_score(state, target, committed, target_eta, "attack")
+        score += target.production * 12.0
+        candidate = Candidate(
+            "attack",
+            score,
+            target.id,
+            tuple(parts),
+            target_eta,
+            committed,
+            "coordinated",
+        )
+        if best is None or candidate.score > best.score:
+            best = candidate
+    return best
+
+
+def _target_priority(state, target):
+    owner, garrison = state.ledger.state_at(target.id, 1)
+    priority = target.production * 12.0 - garrison * 0.2
+    priority -= _nearest_owned_distance(state, target) * 0.12
+    if owner not in (-1, state.player):
+        priority += target.production * 8.0 + target.ships * 0.15
+    if target.id in state.comet_ids:
+        priority = 8.0 - target.ships * 0.4 - _nearest_owned_distance(state, target) * 0.1
+    if state.step > ENDGAME_STEP and owner != -1:
+        priority += target.ships * 0.5
+    return priority
+
+
+def _candidate_targets(state, claimed_targets):
+    targets = [
+        p
+        for p in state.planets
+        if p.owner != state.player and p.id not in claimed_targets
+    ]
+    filtered = []
+    for target in targets:
+        if target.id in state.comet_ids:
+            if target.owner == state.player or target.ships > 16:
+                continue
+        filtered.append(target)
+    filtered.sort(key=lambda p: _target_priority(state, p), reverse=True)
+    return filtered[:20]
+
+
+def _generate_capture_candidates(state, available, claimed_targets):
+    candidates = []
+    for target in _candidate_targets(state, claimed_targets):
+        owner, _ = state.ledger.state_at(target.id, 1)
+        if target.id in state.comet_ids:
+            kind = "comet"
+        elif owner == -1:
+            kind = "expand"
+        else:
+            kind = "attack"
+
+        for source in state.my_planets:
+            candidate = _build_single_capture_candidate(
+                state, target, source, available, kind
+            )
+            if candidate is not None:
+                candidates.append(candidate)
+
+        if kind == "attack" and target.production >= 3:
+            candidate = _build_multi_attack_candidate(state, target, available)
+            if candidate is not None:
+                candidates.append(candidate)
+
+    return candidates
+
+
+def _generate_defense_candidates(state, available):
+    candidates = []
+    for target in state.my_planets:
+        loss_turn = state.ledger.first_not_owned_turn(
+            target.id, state.player, DEFENSE_HORIZON
+        )
+        if loss_turn is None:
+            continue
+
+        lost_owner, lost_garrison = state.ledger.state_at(target.id, loss_turn)
+        needed = max(1, int(math.ceil(lost_garrison + 5)))
+        parts = []
+        committed = 0
+        sources = sorted(
+            [p for p in state.my_planets if p.id != target.id and available.get(p.id, 0) > 0],
+            key=lambda p: dist((p.x, p.y), (target.x, target.y)),
+        )
+        for source in sources:
+            if committed >= needed:
+                break
+            send = min(available[source.id], needed - committed)
+            intercept = solve_intercept_angle(
+                (source.x, source.y), target.id, send, state.step, state.obs
+            )
+            if intercept is None:
+                continue
+            angle, eta = intercept
+            if eta > loss_turn + 0.5:
+                continue
+            parts.append((source.id, angle, send))
+            committed += send
+
+        if committed >= needed:
+            score = 1000.0 + target.production * 35.0 + target.ships - loss_turn * 8.0
+            if lost_owner not in (-1, state.player):
+                score += 80.0
+            candidates.append(
+                Candidate(
+                    "defend",
+                    score,
+                    target.id,
+                    tuple(parts),
+                    float(loss_turn),
+                    committed,
+                    "save_planet",
+                )
+            )
+    return candidates
+
+
+def _apply_candidate(candidate, available, moves):
+    if len(moves) + len(candidate.parts) > MAX_MOVES:
+        return False
+    for source_id, _, ships in candidate.parts:
+        if available.get(source_id, 0) < ships or ships <= 0:
+            return False
+    for source_id, angle, ships in candidate.parts:
+        moves.append([int(source_id), float(angle), int(ships)])
+        available[source_id] -= int(ships)
+    return True
+
+
+def _selection_threshold(state, candidate):
+    if candidate.kind == "defend":
+        return -9999.0
+    if state.step > ENDGAME_STEP:
+        return -8.0
+    if state.step < 70 and candidate.kind == "expand":
+        return 6.0
+    if candidate.kind == "attack":
+        return 18.0
+    if candidate.kind == "comet":
+        return 8.0
+    return 10.0
+
+
+def _choose_moves(state):
+    available = state.initial_available()
+    moves = []
+    claimed_targets = set()
+
+    defense_candidates = sorted(
+        _generate_defense_candidates(state, available),
+        key=lambda c: c.score,
+        reverse=True,
+    )
+    for candidate in defense_candidates:
+        if _apply_candidate(candidate, available, moves):
+            claimed_targets.add(candidate.target_id)
+        if len(moves) >= MAX_MOVES:
+            return moves[:MAX_MOVES]
+
+    for _ in range(8):
+        candidates = _generate_capture_candidates(state, available, claimed_targets)
+        if not candidates:
+            break
+        candidates.sort(key=lambda c: c.score, reverse=True)
+        chosen = candidates[0]
+        if chosen.score < _selection_threshold(state, chosen):
+            break
+        if _apply_candidate(chosen, available, moves):
+            claimed_targets.add(chosen.target_id)
+        else:
+            claimed_targets.add(chosen.target_id)
+        if len(moves) >= MAX_MOVES:
+            break
+
+    return moves[:MAX_MOVES]
+
+
 def ships_needed_to_capture(target_planet, eta, current_step, obs):
+    if (
+        _CURRENT_STATE is not None
+        and _CURRENT_STATE.obs is obs
+        and target_planet.id in _CURRENT_STATE.planet_by_id
+    ):
+        return _CURRENT_STATE.ledger.needed_to_capture(
+            target_planet.id, eta, _CURRENT_STATE.player
+        )
+
     player = obs_get(obs, "player", 0)
     eta = max(0.0, float(eta))
     needed = float(target_planet.ships)
-
     if target_planet.owner != -1:
         needed += target_planet.production * eta
 
@@ -272,298 +805,24 @@ def ships_needed_to_capture(target_planet, eta, current_step, obs):
         arrival = _fleet_arrival_eta(fleet, target_planet, current_step, obs, horizon)
         if arrival is None or arrival > eta + 1.0:
             continue
-
         if fleet.owner == player:
-            if target_planet.owner == player:
-                needed -= fleet.ships
-            else:
-                needed -= fleet.ships * 0.9
+            needed -= fleet.ships * 0.9
         elif target_planet.owner != -1 and fleet.owner == target_planet.owner:
             needed += fleet.ships
         else:
-            needed += fleet.ships * 0.4
+            needed += fleet.ships * 0.35
 
     return max(1, int(math.ceil(needed + CAPTURE_BUFFER)))
 
 
-def _reserve_for_planet(planet, current_step, my_total, enemy_total):
-    if planet.id < 0:
-        return 0
-    if current_step < 35:
-        reserve = max(3, int(planet.production * 2))
-    else:
-        reserve = max(5, int(planet.production * 3))
-    if my_total > enemy_total * 1.8 and current_step > 120:
-        reserve = max(2, reserve // 2)
-    return reserve
-
-
-def _send_amount_with_speed_bonus(needed, available, distance_to_target, current_step):
-    needed = int(max(1, needed))
-    if available < needed:
-        return 0
-    send = needed
-    if distance_to_target > 35:
-        send = max(send, int(needed * 1.20) + 2)
-    if distance_to_target > 55:
-        send = max(send, int(needed * 1.45) + 4)
-    if distance_to_target > 70:
-        send = max(send, int(needed * 1.75) + 6)
-    if current_step < 45 and needed <= 12 and available >= needed + 4:
-        send = max(send, needed + 4)
-    return min(available, send)
-
-
-def _add_move(moves, available, source_id, angle, ships):
-    ships = int(ships)
-    if ships <= 0 or available.get(source_id, 0) < ships:
-        return False
-    moves.append([int(source_id), float(angle), ships])
-    available[source_id] -= ships
-    return True
-
-
-def _best_single_source(target, sources, available, current_step, obs):
-    best = None
-    for source in sources:
-        if available.get(source.id, 0) <= 0:
-            continue
-
-        source_xy = (source.x, source.y)
-        probe = max(available[source.id], target.ships + CAPTURE_BUFFER)
-        intercept = solve_intercept_angle(source_xy, target.id, probe, current_step, obs)
-        if intercept is None:
-            continue
-        angle, eta = intercept
-        needed = ships_needed_to_capture(target, eta, current_step, obs)
-        send = _send_amount_with_speed_bonus(
-            needed, available[source.id], dist(source_xy, (target.x, target.y)), current_step
-        )
-        if send < needed:
-            continue
-        intercept = solve_intercept_angle(source_xy, target.id, send, current_step, obs)
-        if intercept is None:
-            continue
-        angle, eta = intercept
-        needed = ships_needed_to_capture(target, eta, current_step, obs)
-        send = _send_amount_with_speed_bonus(
-            needed, available[source.id], dist(source_xy, (target.x, target.y)), current_step
-        )
-        if send < needed:
-            continue
-
-        value = (target.production * 45.0) / (eta + send * 0.35 + 1.0)
-        if target.owner == -1:
-            value += target.production * 1.5
-        if target.id in set(obs_get(obs, "comet_planet_ids", []) or []):
-            value -= 2.0
-        if best is None or value > best[0]:
-            best = (value, source, angle, send, eta, needed)
-    return best
-
-
-def _incoming_to_planet(target, player, current_step, obs, horizon=35):
-    incoming_enemy = 0
-    incoming_friend = 0
-    first_enemy_eta = None
-    for fleet in as_fleets(obs):
-        eta = _fleet_arrival_eta(fleet, target, current_step, obs, horizon)
-        if eta is None:
-            continue
-        if fleet.owner == player:
-            incoming_friend += fleet.ships
-        else:
-            incoming_enemy += fleet.ships
-            if first_enemy_eta is None or eta < first_enemy_eta:
-                first_enemy_eta = eta
-    return incoming_enemy, incoming_friend, first_enemy_eta
-
-
-def _defense_pass(moves, my_planets, available, current_step, obs):
-    player = obs_get(obs, "player", 0)
-    for target in sorted(my_planets, key=lambda p: p.ships):
-        enemy_ships, friendly_ships, enemy_eta = _incoming_to_planet(
-            target, player, current_step, obs, horizon=32
-        )
-        if enemy_eta is None:
-            continue
-        future_garrison = target.ships + target.production * enemy_eta + friendly_ships
-        if future_garrison >= enemy_ships + 2:
-            continue
-        needed = int(math.ceil(enemy_ships - future_garrison + 4))
-
-        reinforcers = sorted(
-            [p for p in my_planets if p.id != target.id and available.get(p.id, 0) > 0],
-            key=lambda p: dist((p.x, p.y), (target.x, target.y)),
-        )
-        for source in reinforcers:
-            if needed <= 0:
-                break
-            send = min(available[source.id], needed)
-            intercept = solve_intercept_angle((source.x, source.y), target.id, send, current_step, obs)
-            if intercept is None:
-                continue
-            angle, eta = intercept
-            if eta > enemy_eta + 1.0:
-                continue
-            if _add_move(moves, available, source.id, angle, send):
-                needed -= send
-
-
-def _comet_pass(moves, my_planets, available, current_step, obs):
-    comet_ids = set(obs_get(obs, "comet_planet_ids", []) or [])
-    if not comet_ids:
-        return
-    comets = [
-        p
-        for p in as_planets(obs)
-        if p.id in comet_ids and p.owner != obs_get(obs, "player", 0) and p.ships <= 18
-    ]
-    for target in sorted(comets, key=lambda p: (p.ships, -p.production))[:3]:
-        best = _best_single_source(target, my_planets, available, current_step, obs)
-        if best is None:
-            continue
-        _, source, angle, send, eta, _ = best
-        if eta > 18:
-            continue
-        _add_move(moves, available, source.id, angle, send)
-        if len(moves) >= MAX_MOVES:
-            return
-
-
-def _expansion_pass(moves, my_planets, targets, available, current_step, obs):
-    scored = []
-    for target in targets:
-        best = _best_single_source(target, my_planets, available, current_step, obs)
-        if best is None:
-            continue
-        value, source, angle, send, eta, needed = best
-        value += target.production * 4.0
-        value -= target.ships * 0.08
-        value -= eta * 0.04
-        scored.append((value, target, source, angle, send, eta, needed))
-
-    scored.sort(reverse=True, key=lambda item: item[0])
-    launched = 0
-    for _, target, source, angle, send, eta, needed in scored:
-        if launched >= 4 or len(moves) >= MAX_MOVES:
-            break
-        if target.owner != -1:
-            continue
-        if ships_needed_to_capture(target, eta, current_step, obs) > send:
-            continue
-        if _add_move(moves, available, source.id, angle, send):
-            launched += 1
-
-
-def _attack_pass(moves, my_planets, enemy_planets, available, current_step, obs):
-    if len(moves) >= MAX_MOVES:
-        return
-
-    enemy_planets = sorted(
-        enemy_planets,
-        key=lambda p: (p.production, -p.ships),
-        reverse=True,
-    )
-
-    for target in enemy_planets[:8]:
-        options = []
-        for source in my_planets:
-            if available.get(source.id, 0) <= 0:
-                continue
-            source_xy = (source.x, source.y)
-            probe = available[source.id]
-            intercept = solve_intercept_angle(source_xy, target.id, probe, current_step, obs)
-            if intercept is None:
-                continue
-            angle, eta = intercept
-            if eta > 70:
-                continue
-            options.append((eta, source, angle, dist(source_xy, (target.x, target.y))))
-
-        if not options:
-            continue
-        options.sort(key=lambda item: item[0])
-
-        committed = []
-        committed_ships = 0
-        attack_eta = 0.0
-        for eta, source, angle, distance_to_target in options[:4]:
-            attack_eta = max(attack_eta, eta)
-            needed = ships_needed_to_capture(target, attack_eta, current_step, obs) + 2
-            send = _send_amount_with_speed_bonus(
-                min(needed - committed_ships, available[source.id]),
-                available[source.id],
-                distance_to_target,
-                current_step,
-            )
-            if send <= 0:
-                continue
-            committed.append((source, angle, send))
-            committed_ships += send
-            if committed_ships >= needed:
-                break
-
-        if not committed:
-            continue
-        needed = ships_needed_to_capture(target, attack_eta, current_step, obs) + 2
-        if committed_ships < needed:
-            continue
-        for source, angle, send in committed:
-            _add_move(moves, available, source.id, angle, send)
-        return
-
-
-def _total_ships(planets, fleets, owner):
-    return sum(p.ships for p in planets if p.owner == owner) + sum(
-        f.ships for f in fleets if f.owner == owner
-    )
-
-
 def agent(obs, config=None):
     del config
-    _prepare_obs_cache(obs)
-    current_step = int(obs_get(obs, "step", 0))
-    player = obs_get(obs, "player", 0)
-    planets = as_planets(obs)
-    fleets = as_fleets(obs)
-    comet_ids = set(obs_get(obs, "comet_planet_ids", []) or [])
-
-    my_planets = [p for p in planets if p.owner == player]
-    if not my_planets:
+    global _CURRENT_STATE
+    state = GameState(obs)
+    _CURRENT_STATE = state
+    if not state.my_planets:
         return []
-
-    enemy_planets = [p for p in planets if p.owner not in (-1, player)]
-    neutral_planets = [p for p in planets if p.owner == -1 and p.id not in comet_ids]
-    my_total = _total_ships(planets, fleets, player)
-    enemy_total = sum(_total_ships(planets, fleets, owner) for owner in range(4) if owner != player)
-
-    available = {}
-    for planet in my_planets:
-        reserve = _reserve_for_planet(planet, current_step, my_total, enemy_total)
-        if planet.id in comet_ids:
-            reserve = 0
-        available[planet.id] = max(0, int(planet.ships - reserve))
-
-    moves = []
-    _defense_pass(moves, my_planets, available, current_step, obs)
-    if len(moves) < MAX_MOVES:
-        _comet_pass(moves, my_planets, available, current_step, obs)
-
-    if len(moves) < MAX_MOVES:
-        neutral_candidates = sorted(
-            neutral_planets,
-            key=lambda p: (p.production * 8.0 - p.ships, p.production),
-            reverse=True,
-        )[:14]
-        _expansion_pass(
-            moves, my_planets, neutral_candidates, available, current_step, obs
-        )
-
-    if len(moves) < MAX_MOVES and (current_step > 45 or not neutral_planets):
-        _attack_pass(moves, my_planets, enemy_planets, available, current_step, obs)
-
-    return moves[:MAX_MOVES]
+    return _choose_moves(state)
 
 
 if __name__ == "__main__":
