@@ -1,6 +1,6 @@
-# Orbit Wars v5 Heuristic Agent
+# Orbit Wars v6 Heuristic Agent
 
-This repository contains a single-file Orbit Wars Kaggle agent in `main.py`, plus v5 notebooks for offline analysis and training.
+This repository contains a single-file Orbit Wars Kaggle agent in `main.py`, plus v5/v6 notebooks for offline analysis and training.
 
 ## Run locally
 
@@ -24,26 +24,26 @@ python test_local.py --games 10 --baselines random nearest starter greedy rusher
 python test_local.py --games 50 --compare-git-ref 8f5b855
 ```
 
-## Generate v5 training data
+## Generate v6 training data
 
-The generator runs local games, logs candidate features at decision time, writes one folder for the whole run under gitignored `data/<run_start_timestamp>/`, and uploads that run folder to Hugging Face under `devaanshpa/orbit-wars-agent/data/<run_start_timestamp>`.
+The generator runs local games, logs candidate features at decision time, relabels rows using the final game outcome, writes one folder for the whole run under gitignored `data/<run_start_timestamp>/`, and uploads that run folder to Hugging Face under `devaanshpa/orbit-wars-agent/data/<run_start_timestamp>`.
 
 ```bash
-python generate_training_data.py --games 100 --opponents random nearest starter
+python generate_training_data.py --games 300 --workers 16
 ```
 
-Each game is identified inside the CSV by `game_id`; games do not create separate timestamped folders.
+Each game is identified inside `candidates_v6.csv` by `game_id`; games do not create separate timestamped folders. v6 defaults to both player sides, the full local baseline mix (`random nearest starter greedy rusher`), and 30 candidate rows per turn. Add `self` to `--opponents` only for slower self-play runs.
 
 For more visible progress and better CPU use on a multi-core machine:
 
 ```bash
-python generate_training_data.py --games 100 --opponents random nearest starter --workers 4
+python generate_training_data.py --games 300 --workers 16 --max-candidates-per-turn 36
 ```
 
 For a local smoke test without upload:
 
 ```bash
-python generate_training_data.py --games 1 --max-rows 200 --no-upload
+python generate_training_data.py --games 1 --max-rows 200 --one-side --no-upload
 ```
 
 The generator does not need a GPU. Orbit Wars game simulation and candidate extraction are CPU-bound Python work. Low total CPU usage usually means a single Python worker is saturating one core; use `--workers` to run independent games in parallel.
@@ -52,13 +52,19 @@ Kaggle may print optional OpenSpiel environment warnings in some installs. The g
 
 ## Submit
 
+After training v6 and downloading or keeping `model_weights_v6.json` locally, build a gitignored single-file agent:
+
 ```bash
-kaggle competitions submit orbit-wars -f main.py -m "v5 model-guided deep planner"
+python build_submission.py --weights notebooks/v6/exports/model_weights_v6.json --output models/v6_kaggle/main.py
+```
+
+```bash
+kaggle competitions submit orbit-wars -f models/v6_kaggle/main.py -m "v6 outcome ranker"
 ```
 
 ## Hugging Face artifacts
 
-Training notebooks write generated outputs under local `notebooks/**/exports/`, `models/`, and `data/` folders. These paths are gitignored. The v5 training notebook trains, evaluates, saves graphs, and uploads all exported artifacts to Hugging Face repo `devaanshpa/orbit-wars-agent` under the remote `v5/` folder after prompting for `HF_TOKEN`.
+Training notebooks write generated outputs under local `notebooks/**/exports/`, `models/`, and `data/` folders. These paths are gitignored. The v5 training notebook trains, evaluates, saves graphs, and uploads all exported artifacts to Hugging Face repo `devaanshpa/orbit-wars-agent` under the remote `v5/` folder after prompting for `HF_TOKEN`. The v6 notebook does the same under the remote `v6/` folder and trains a compact JSON-exportable MLP ranker.
 
 Later local model downloads should go into the root `models/` folder, which is also gitignored.
 
@@ -68,6 +74,18 @@ Do not commit trained models, checkpoints, replay datasets, generated model expo
 
 v5 keeps the v4 guarded heuristic core, then adds model-ready candidate features and a bounded deep planner over generated expansion, attack, and comet candidates. If no local model weights are available, the agent stays Kaggle-safe and falls back to heuristic scoring.
 
-## What v6 should add
+## What v6 does
 
-v6 should consume trained v5 artifact metrics, add replay-backed candidate labels, and tune the planner/model blend against leaderboard and local head-to-head results.
+v6 keeps the v5 candidate generator and planner, but trains on outcome-weighted labels instead of pure imitation labels. The v6 notebook trains a small MLP candidate ranker, exports it as JSON for single-file Kaggle submission builds, saves training graphs, and uploads artifacts to Hugging Face.
+
+For a large CSV, the notebook runs the same pairwise trainer as this command:
+
+```bash
+python notebooks/v6/train_v6_ranker.py --csv data/<run_start_timestamp>/candidates_v6.csv --upload
+```
+
+The trainer optimizes both outcome-weighted classification and within-turn pairwise ranking, which is the metric that matters when the agent chooses among legal candidates.
+
+## What v7 should add
+
+v7 should use replay/episode analysis and self-play rollouts to create stronger counterfactual labels before attempting full reinforcement learning.

@@ -1,5 +1,14 @@
 # Changelog
 
+## v6 - Outcome-Weighted Candidate Ranker
+
+- Added outcome-weighted `candidates_v6.csv` generation so selected moves from winning games train as stronger positives and selected moves from losses are downweighted.
+- Expanded default data generation to both player sides, the full local baseline mix, and more candidate rows per turn.
+- Added `notebooks/v6` with a PyTorch MLP ranker, grouped validation split, training logs, graph export, and Hugging Face upload under `devaanshpa/orbit-wars-agent/v6`.
+- Extended the agent model hook to score compact JSON-exported MLP artifacts while preserving the v5 logistic fallback.
+- Added a local submission builder that embeds downloaded/exported model JSON into a gitignored `models/` submission file.
+- Added pairwise within-turn ranker training and extra runtime features so larger v6 datasets improve candidate ordering rather than only row accuracy.
+
 ## v5 - Model-Guided Deep Planner
 
 - Planned offline candidate scoring with the v5 training notebook under `notebooks/v5`.

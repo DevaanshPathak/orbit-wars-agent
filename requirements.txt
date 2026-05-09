@@ -1,0 +1,11 @@
+# Local Orbit Wars development, data generation, and v6 training.
+# Kaggle submissions remain single-file and do not import these training deps.
+
+kaggle-environments>=1.28.0
+kaggle>=2.0.1
+huggingface-hub>=0.23.0
+matplotlib>=3.8.0
+
+# PyTorch is required only for notebooks/v6/train_v6_ranker.py.
+# If this fails on Python 3.14, use Python 3.11/3.12 or Kaggle/Colab.
+torch>=2.3.0

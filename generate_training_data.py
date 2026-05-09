@@ -17,7 +17,8 @@ from pathlib import Path
 
 HF_REPO_ID = "devaanshpa/orbit-wars-agent"
 HF_REPO_TYPE = "model"
-VERSION = "v5_teacher"
+VERSION = "v6_outcome_teacher"
+CSV_BASENAME = "candidates_v6.csv"
 
 make = None
 Planet = None
@@ -31,36 +32,56 @@ FEATURE_FIELDS = [
     "my_planets",
     "enemy_planets",
     "neutral_planets",
+    "planet_count_gap",
     "my_total",
     "enemy_total",
     "max_enemy_total",
+    "total_ratio",
     "my_production",
     "enemy_production",
     "production_gap",
+    "production_ratio",
+    "phase_opening",
+    "phase_midgame",
+    "phase_lategame",
+    "phase_endgame",
     "target_owner_neutral",
     "target_owner_enemy",
     "target_owner_projected_mine",
     "target_ships",
     "target_projected_garrison",
     "target_production",
+    "target_high_production",
+    "target_prod_per_ship",
+    "target_prod_per_eta",
+    "target_value_net",
+    "target_value_density",
     "target_static",
     "target_orbiting",
     "target_comet",
     "eta",
+    "eta_fraction_remaining",
     "ships_sent",
     "parts_count",
     "ships_per_eta",
     "ship_cost_fraction",
+    "source_commit_fraction",
     "source_distance_min",
     "source_distance_avg",
     "source_reserve_min",
     "source_reserve_sum",
     "source_budget_sum",
+    "source_budget_after_send",
     "enemy_eta",
     "enemy_ships",
+    "enemy_pressure",
     "my_eta",
     "my_reach_ships",
+    "my_reach_advantage",
     "race_margin",
+    "race_margin_per_eta",
+    "capture_margin",
+    "capture_margin_ratio",
     "indirect_value",
     "heuristic_score_scaled",
     "kind_expand",
@@ -74,7 +95,20 @@ FEATURE_FIELDS = [
     "kind_evacuate",
 ]
 
-CSV_FIELDS = ["label", "game_id", "candidate_id", "version"] + FEATURE_FIELDS
+METADATA_FIELDS = [
+    "label",
+    "selected",
+    "outcome_weight",
+    "game_result",
+    "reward_margin",
+    "agent_reward",
+    "opponent_reward",
+    "game_id",
+    "candidate_id",
+    "version",
+]
+
+CSV_FIELDS = METADATA_FIELDS + FEATURE_FIELDS
 
 
 @contextlib.contextmanager
@@ -247,12 +281,15 @@ BASELINES = {
     "nearest": nearest_sniper,
     "greedy": greedy_expander,
     "rusher": aggressive_rusher,
+    "self": None,
 }
 
 
 def resolve_opponent(name):
     if name not in BASELINES:
         raise ValueError(f"Unknown opponent {name!r}. Choose from {sorted(BASELINES)}")
+    if name == "self":
+        return main.agent
     return BASELINES[name]
 
 
@@ -459,8 +496,15 @@ def candidate_rows_from_obs(obs, game_id, max_candidates_per_turn, use_deep_plan
     rows = []
     for key, candidate in records.items():
         features = main._candidate_features(state, candidate, policy)
+        was_selected = 1.0 if key in selected else 0.0
         row = {
-            "label": 1.0 if key in selected else 0.0,
+            "label": was_selected,
+            "selected": was_selected,
+            "outcome_weight": 1.0,
+            "game_result": 0.0,
+            "reward_margin": 0.0,
+            "agent_reward": 0.0,
+            "opponent_reward": 0.0,
             "game_id": game_id,
             "candidate_id": key,
             "version": VERSION,
@@ -468,6 +512,74 @@ def candidate_rows_from_obs(obs, game_id, max_candidates_per_turn, use_deep_plan
         for field in FEATURE_FIELDS:
             row[field] = float(features.get(field, 0.0))
         rows.append(row)
+    return rows
+
+
+def final_rewards_from_env(env, side):
+    final_step = env.steps[-1] if env.steps else []
+    rewards = []
+    for state in final_step:
+        reward = getattr(state, "reward", None)
+        rewards.append(0.0 if reward is None else float(reward))
+    agent_reward = rewards[side] if side < len(rewards) else 0.0
+    opponent_rewards = [reward for index, reward in enumerate(rewards) if index != side]
+    opponent_reward = max(opponent_rewards) if opponent_rewards else 0.0
+    margin = agent_reward - opponent_reward
+    if margin > 1e-9:
+        result = 1.0
+    elif margin < -1e-9:
+        result = -1.0
+    else:
+        result = 0.0
+    return agent_reward, opponent_reward, margin, result
+
+
+def relabel_rows_with_outcome(rows, agent_reward, opponent_reward, margin, result):
+    margin_unit = max(-1.0, min(1.0, margin / 700.0))
+    for row in rows:
+        selected = float(row.get("selected", 0.0) or 0.0) >= 0.5
+        tactical = any(
+            float(row.get(name, 0.0) or 0.0) >= 0.5
+            for name in ("kind_defend", "kind_recapture", "kind_evacuate")
+        )
+        opportunistic = any(
+            float(row.get(name, 0.0) or 0.0) >= 0.5
+            for name in ("kind_snipe", "kind_crash", "kind_comet")
+        )
+
+        if selected:
+            if result > 0.0:
+                label = 0.80 + 0.18 * max(0.0, margin_unit)
+                weight = 1.35 + 0.75 * abs(margin_unit)
+            elif result < 0.0:
+                label = 0.18 + 0.22 * max(0.0, 1.0 + margin_unit)
+                weight = 0.95 + 0.55 * abs(margin_unit)
+            else:
+                label = 0.55
+                weight = 1.00
+            if tactical:
+                label = max(label, 0.82 if result >= 0.0 else 0.68)
+                weight += 0.80
+            elif opportunistic and result >= 0.0:
+                label = max(label, 0.74)
+                weight += 0.25
+        else:
+            if result > 0.0:
+                label = 0.04
+                weight = 0.75
+            elif result < 0.0:
+                label = 0.02
+                weight = 0.65
+            else:
+                label = 0.08
+                weight = 0.55
+
+        row["label"] = round(max(0.0, min(1.0, label)), 6)
+        row["outcome_weight"] = round(max(0.05, weight), 6)
+        row["game_result"] = result
+        row["reward_margin"] = round(margin, 6)
+        row["agent_reward"] = round(agent_reward, 6)
+        row["opponent_reward"] = round(opponent_reward, 6)
     return rows
 
 
@@ -577,12 +689,18 @@ def generate_game_rows(task):
         else:
             env.run([opponent, logging_agent])
 
+    agent_reward, opponent_reward, margin, result = final_rewards_from_env(env, side)
+    relabel_rows_with_outcome(rows, agent_reward, opponent_reward, margin, result)
     positives = sum(1 for row in rows if float(row["label"]) >= 0.5)
     return {
         "game_id": game_id,
         "seed": seed,
         "side": side,
         "opponent": opponent_name,
+        "agent_reward": agent_reward,
+        "opponent_reward": opponent_reward,
+        "reward_margin": margin,
+        "game_result": result,
         "rows": rows,
         "row_count": len(rows),
         "positive_rows": positives,
@@ -621,8 +739,16 @@ def log_progress(done, total, rows, positives, turns, started_at, last_result=No
     eta = (total - done) / max(1e-6, done / elapsed) if done else 0.0
     tail = ""
     if last_result is not None:
+        result_text = (
+            "win"
+            if last_result.get("game_result", 0.0) > 0.0
+            else "loss"
+            if last_result.get("game_result", 0.0) < 0.0
+            else "tie"
+        )
         tail = (
             f" last={last_result['game_id']} "
+            f"result={result_text} margin={last_result.get('reward_margin', 0.0):.1f} "
             f"rows={last_result['row_count']} "
             f"turns={last_result['turns_logged']} "
             f"time={last_result['duration_seconds']:.1f}s"
@@ -653,23 +779,29 @@ def upload_to_hf(run_dir, run_start_timestamp, repo_id, repo_type):
         repo_id=repo_id,
         repo_type=repo_type,
         path_in_repo=remote_path,
-        commit_message=f"Upload Orbit Wars v5 training data {run_start_timestamp}",
+        commit_message=f"Upload Orbit Wars v6 training data {run_start_timestamp}",
     )
     return remote_path
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Generate Orbit Wars v5 candidate training data.")
-    parser.add_argument("--games", type=int, default=100)
+    parser = argparse.ArgumentParser(description="Generate Orbit Wars v6 outcome-weighted candidate training data.")
+    parser.add_argument("--games", type=int, default=200)
     parser.add_argument("--seed-start", type=int, default=1)
     parser.add_argument(
         "--opponents",
         nargs="+",
         choices=sorted(BASELINES),
-        default=["random", "nearest", "starter"],
+        default=["random", "nearest", "starter", "greedy", "rusher"],
     )
-    parser.add_argument("--both-sides", action="store_true")
-    parser.add_argument("--max-candidates-per-turn", type=int, default=18)
+    parser.add_argument("--both-sides", action="store_true", default=True)
+    parser.add_argument(
+        "--one-side",
+        action="store_false",
+        dest="both_sides",
+        help="Only log player 0 games. By default v6 logs both sides.",
+    )
+    parser.add_argument("--max-candidates-per-turn", type=int, default=30)
     parser.add_argument("--max-rows", type=int, default=0)
     parser.add_argument("--progress-every", type=int, default=1)
     parser.add_argument("--workers", type=int, default=1)
@@ -702,7 +834,7 @@ def main_cli():
     )
     run_dir = Path(args.output_root) / run_start_timestamp
     run_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = run_dir / "candidates_v5.csv"
+    csv_path = run_dir / CSV_BASENAME
 
     started_at = time.time()
     total_tasks = args.games * (2 if args.both_sides else 1)
@@ -714,11 +846,38 @@ def main_cli():
         writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
         writer.writeheader()
         if args.workers == 1:
-            recorder = CsvRecorder(writer, args)
-            games_run = run_games(args, recorder)
-            rows_written = recorder.rows_written
-            positive_rows = recorder.positive_rows
-            turns_logged = recorder.turns_logged
+            tasks = list(iter_tasks(args))
+            print(
+                f"starting workers=1 tasks={len(tasks)} "
+                f"max_rows={args.max_rows or 'unlimited'}",
+                flush=True,
+            )
+            for task in tasks:
+                if args.max_rows and rows_written >= args.max_rows:
+                    break
+                game_result = generate_game_rows(task)
+                rows_to_write = game_result["rows"]
+                if args.max_rows:
+                    rows_to_write = rows_to_write[: max(0, args.max_rows - rows_written)]
+                for row in rows_to_write:
+                    writer.writerow({field: row.get(field, "") for field in CSV_FIELDS})
+                f.flush()
+                games_run += 1
+                rows_written += len(rows_to_write)
+                positive_rows += sum(
+                    1 for row in rows_to_write if float(row["label"]) >= 0.5
+                )
+                turns_logged += game_result["turns_logged"]
+                if games_run % args.progress_every == 0 or games_run == total_tasks:
+                    log_progress(
+                        games_run,
+                        total_tasks,
+                        rows_written,
+                        positive_rows,
+                        turns_logged,
+                        started_at,
+                        game_result,
+                    )
         else:
             tasks = list(iter_tasks(args))
             print(
@@ -772,8 +931,11 @@ def main_cli():
         "positive_rows": positive_rows,
         "turns_logged": turns_logged,
         "csv_path": str(csv_path),
+        "csv_basename": CSV_BASENAME,
+        "label_strategy": "outcome_weighted_selected_candidates",
         "duration_seconds": round(time.time() - started_at, 3),
         "feature_fields": FEATURE_FIELDS,
+        "metadata_fields": METADATA_FIELDS,
     }
     (run_dir / "manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True),

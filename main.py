@@ -56,7 +56,7 @@ PLANNER_MAX_PICKS = 3
 PLANNER_BUDGET = 0.055
 
 # Trained model artifacts must not be committed to GitHub. A local, gitignored
-# submission build may replace this with the JSON exported by the v5 notebook.
+# submission build may replace this with the JSON exported by the v5/v6 notebook.
 MODEL_WEIGHTS = None
 
 Candidate = namedtuple(
@@ -1233,44 +1233,74 @@ def _candidate_features(state, candidate, policy=None):
     ships_sent = float(candidate.ships)
     race_margin = enemy_eta_capped - eta
     kind = candidate.kind
+    turns_left = float(state.turns_left())
+    remaining_after_eta = max(0.0, turns_left - eta)
+    projected_garrison = max(0.0, float(garrison_at_eta))
+    source_budget_after_send = source_budget_sum - ships_sent
+    capture_margin = ships_sent - projected_garrison
+    target_value_net = target.production * remaining_after_eta - ships_sent
+    target_value_density = target_value_net / max(1.0, ships_sent + eta)
+    enemy_pressure = float(enemy_ships) / max(1.0, projected_garrison + float(target.ships))
+    my_reach_advantage = float(my_ships) - float(enemy_ships)
+    source_commit_fraction = ships_sent / max(1.0, source_budget_sum)
 
     features = {
         "step": float(state.step),
-        "turns_left": float(state.turns_left()),
+        "turns_left": turns_left,
         "num_players": float(state.num_players),
         "my_planets": float(len(state.my_planets)),
         "enemy_planets": float(len(state.enemy_planets)),
         "neutral_planets": float(len(state.neutral_planets)),
+        "planet_count_gap": float(len(state.my_planets) - len(state.enemy_planets)),
         "my_total": float(state.my_total),
         "enemy_total": float(state.enemy_total),
         "max_enemy_total": float(state.max_enemy_total),
+        "total_ratio": float(state.my_total) / max(1.0, float(state.enemy_total)),
         "my_production": float(state.my_production),
         "enemy_production": float(state.enemy_production),
         "production_gap": float(state.my_production - state.enemy_production),
+        "production_ratio": float(state.my_production) / max(1.0, float(state.enemy_production)),
+        "phase_opening": 1.0 if state.step < OPENING_END_STEP else 0.0,
+        "phase_midgame": 1.0 if OPENING_END_STEP <= state.step < 250 else 0.0,
+        "phase_lategame": 1.0 if 250 <= state.step < ENDGAME_STEP else 0.0,
+        "phase_endgame": 1.0 if state.step >= ENDGAME_STEP else 0.0,
         "target_owner_neutral": 1.0 if target.owner == -1 else 0.0,
         "target_owner_enemy": 1.0 if target.owner not in (-1, state.player) else 0.0,
         "target_owner_projected_mine": 1.0 if owner_at_eta == state.player else 0.0,
         "target_ships": float(target.ships),
         "target_projected_garrison": float(garrison_at_eta),
         "target_production": float(target.production),
+        "target_high_production": 1.0 if target.production >= 4 else 0.0,
+        "target_prod_per_ship": float(target.production) / max(1.0, projected_garrison + ships_sent),
+        "target_prod_per_eta": float(target.production) / eta,
+        "target_value_net": float(target_value_net),
+        "target_value_density": float(target_value_density),
         "target_static": 1.0 if state.is_static(target) else 0.0,
         "target_orbiting": 0.0 if state.is_static(target) else 1.0,
         "target_comet": 1.0 if target.id in state.comet_ids else 0.0,
         "eta": eta,
+        "eta_fraction_remaining": eta / max(1.0, turns_left),
         "ships_sent": ships_sent,
         "parts_count": float(len(candidate.parts)),
         "ships_per_eta": ships_sent / eta,
         "ship_cost_fraction": ships_sent / total_visible,
+        "source_commit_fraction": float(source_commit_fraction),
         "source_distance_min": float(min(source_distances)),
         "source_distance_avg": float(sum(source_distances) / len(source_distances)),
         "source_reserve_min": float(min_source_reserve),
         "source_reserve_sum": float(source_reserve_sum),
         "source_budget_sum": float(source_budget_sum),
+        "source_budget_after_send": float(source_budget_after_send),
         "enemy_eta": enemy_eta_capped,
         "enemy_ships": float(enemy_ships),
+        "enemy_pressure": float(enemy_pressure),
         "my_eta": my_eta_capped,
         "my_reach_ships": float(my_ships),
+        "my_reach_advantage": float(my_reach_advantage),
         "race_margin": float(race_margin),
+        "race_margin_per_eta": float(race_margin) / eta,
+        "capture_margin": float(capture_margin),
+        "capture_margin_ratio": float(capture_margin) / max(1.0, projected_garrison + 1.0),
         "indirect_value": float(indirect_value.get(target.id, 0.0)),
         "heuristic_score_scaled": float(candidate.score) / 100.0,
         "kind_expand": 1.0 if kind == "expand" else 0.0,
@@ -1290,6 +1320,40 @@ def _model_score_candidate(features, model=None):
     model = MODEL_WEIGHTS if model is None else model
     if not model:
         return 0.0
+    model_type = str(model.get("model_type", ""))
+
+    if model_type.startswith("mlp"):
+        feature_names = model.get("features", [])
+        means = model.get("mean", {})
+        scales = model.get("scale", {})
+        values = []
+        for name in feature_names:
+            value = float(features.get(name, 0.0))
+            scale = float(scales.get(name, 1.0) or 1.0)
+            values.append((value - float(means.get(name, 0.0))) / scale)
+
+        activations = values
+        for index, layer in enumerate(model.get("layers", [])):
+            next_values = []
+            weights_matrix = layer.get("weights", [])
+            biases = layer.get("bias", [])
+            for neuron_index, neuron_weights in enumerate(weights_matrix):
+                total = float(biases[neuron_index]) if neuron_index < len(biases) else 0.0
+                total += sum(float(weight) * value for weight, value in zip(neuron_weights, activations))
+                next_values.append(total)
+            if index < len(model.get("layers", [])) - 1:
+                activation = str(layer.get("activation", model.get("activation", "relu")))
+                if activation == "tanh":
+                    next_values = [math.tanh(max(-20.0, min(20.0, value))) for value in next_values]
+                else:
+                    next_values = [value if value > 0.0 else 0.0 for value in next_values]
+            activations = next_values
+        if not activations:
+            return 0.0
+        logit = max(-50.0, min(50.0, float(activations[0])))
+        probability = 1.0 / (1.0 + math.exp(-logit))
+        return (probability - 0.5) * float(model.get("score_scale", 150.0))
+
     weights = model.get("weights", {})
     if not weights:
         return 0.0
@@ -1302,7 +1366,6 @@ def _model_score_candidate(features, model=None):
         value = (value - float(means.get(name, 0.0))) / scale
         score += float(weight) * value
 
-    model_type = str(model.get("model_type", ""))
     if model_type.startswith("logistic"):
         if score >= 0:
             prob = 1.0 / (1.0 + math.exp(-min(50.0, score)))
@@ -1318,7 +1381,8 @@ def _score_candidate_v5(state, candidate, policy=None):
     if USE_MODEL_SCORER and MODEL_WEIGHTS:
         features = _candidate_features(state, candidate, policy)
         model_score = _model_score_candidate(features, MODEL_WEIGHTS)
-        score = score * (1.0 - MODEL_BLEND) + (score + model_score) * MODEL_BLEND
+        blend = max(0.0, min(0.6, float(MODEL_WEIGHTS.get("blend", MODEL_BLEND))))
+        score = score * (1.0 - blend) + (score + model_score) * blend
     return score
 
 
