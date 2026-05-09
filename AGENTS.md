@@ -179,3 +179,13 @@ kaggle competitions logs <EPISODE_ID> 0
 # Check leaderboard
 kaggle competitions leaderboard orbit-wars -s
 ```
+
+Repository Rules
+Every new agent version must update `CHANGELOG.md`.
+Every new agent version that uses notebooks must update its matching notebook notes under `notebooks/v*/`.
+Do not commit or push trained models, checkpoints, exported weights, replay datasets, generated submission bundles, or generated model artifacts to GitHub.
+Training notebooks must upload generated version artifacts to Hugging Face instead of storing them in git.
+For v5, upload artifacts to Hugging Face repo `devaanshpa/orbit-wars-agent` under the remote folder `v5/`.
+Notebook auth must ask for `HF_TOKEN` in the notebook runtime and must not print or save the token.
+Downloaded Hugging Face artifacts must go under root `models/`, which must stay gitignored.
+Generated training datasets must go under root `data/<run_start_timestamp>/`, which must stay gitignored, and uploads should use Hugging Face paths like `data/<run_start_timestamp>/`. Do not create one timestamped folder per game.

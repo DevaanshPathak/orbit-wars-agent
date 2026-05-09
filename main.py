@@ -45,7 +45,19 @@ USE_RECAPTURE = True
 USE_STAGING = False
 USE_CRASH_EXPLOITS = True
 USE_ENDGAME_SCORE_MODE = True
+USE_MODEL_SCORER = False
+USE_DEEP_PLANNER = True
 SPECULATIVE_TIME_MARGIN = 0.14
+MODEL_BLEND = 0.22
+PLANNER_HORIZON = 32
+PLANNER_BEAM = 3
+PLANNER_TOP_CANDIDATES = 8
+PLANNER_MAX_PICKS = 3
+PLANNER_BUDGET = 0.055
+
+# Trained model artifacts must not be committed to GitHub. A local, gitignored
+# submission build may replace this with the JSON exported by the v5 notebook.
+MODEL_WEIGHTS = None
 
 Candidate = namedtuple(
     "Candidate",
@@ -1181,6 +1193,171 @@ def _candidate_score(state, target, send, eta, kind, policy=None):
     return score
 
 
+def _candidate_features(state, candidate, policy=None):
+    target = state.planet_by_id.get(candidate.target_id)
+    if target is None:
+        return {}
+
+    eta = max(1.0, float(candidate.eta))
+    owner_at_eta, garrison_at_eta = state.ledger.state_at(target.id, eta)
+    enemy_eta, enemy_ships, _ = state.enemy_reach(target)
+    my_eta, my_ships, _ = state.my_reach(target)
+    enemy_eta_capped = min(999.0, float(enemy_eta))
+    my_eta_capped = min(999.0, float(my_eta))
+    source_distances = []
+    source_reserve_sum = 0.0
+    source_budget_sum = 0.0
+    min_source_reserve = 999.0
+    if policy is None:
+        policy = {}
+    reserve = policy.get("reserve", {})
+    attack_budget = policy.get("attack_budget", {})
+    indirect_value = policy.get("indirect_value", {})
+
+    for source_id, _, _ in candidate.parts:
+        source = state.planet_by_id.get(source_id)
+        if source is None:
+            continue
+        d = dist((source.x, source.y), (target.x, target.y))
+        source_distances.append(d)
+        source_reserve = float(reserve.get(source_id, state.reserve_for(source)))
+        min_source_reserve = min(min_source_reserve, source_reserve)
+        source_reserve_sum += source_reserve
+        source_budget_sum += float(attack_budget.get(source_id, 0))
+
+    if not source_distances:
+        source_distances = [999.0]
+        min_source_reserve = 0.0
+
+    total_visible = max(1.0, float(state.my_total + state.enemy_total))
+    ships_sent = float(candidate.ships)
+    race_margin = enemy_eta_capped - eta
+    kind = candidate.kind
+
+    features = {
+        "step": float(state.step),
+        "turns_left": float(state.turns_left()),
+        "num_players": float(state.num_players),
+        "my_planets": float(len(state.my_planets)),
+        "enemy_planets": float(len(state.enemy_planets)),
+        "neutral_planets": float(len(state.neutral_planets)),
+        "my_total": float(state.my_total),
+        "enemy_total": float(state.enemy_total),
+        "max_enemy_total": float(state.max_enemy_total),
+        "my_production": float(state.my_production),
+        "enemy_production": float(state.enemy_production),
+        "production_gap": float(state.my_production - state.enemy_production),
+        "target_owner_neutral": 1.0 if target.owner == -1 else 0.0,
+        "target_owner_enemy": 1.0 if target.owner not in (-1, state.player) else 0.0,
+        "target_owner_projected_mine": 1.0 if owner_at_eta == state.player else 0.0,
+        "target_ships": float(target.ships),
+        "target_projected_garrison": float(garrison_at_eta),
+        "target_production": float(target.production),
+        "target_static": 1.0 if state.is_static(target) else 0.0,
+        "target_orbiting": 0.0 if state.is_static(target) else 1.0,
+        "target_comet": 1.0 if target.id in state.comet_ids else 0.0,
+        "eta": eta,
+        "ships_sent": ships_sent,
+        "parts_count": float(len(candidate.parts)),
+        "ships_per_eta": ships_sent / eta,
+        "ship_cost_fraction": ships_sent / total_visible,
+        "source_distance_min": float(min(source_distances)),
+        "source_distance_avg": float(sum(source_distances) / len(source_distances)),
+        "source_reserve_min": float(min_source_reserve),
+        "source_reserve_sum": float(source_reserve_sum),
+        "source_budget_sum": float(source_budget_sum),
+        "enemy_eta": enemy_eta_capped,
+        "enemy_ships": float(enemy_ships),
+        "my_eta": my_eta_capped,
+        "my_reach_ships": float(my_ships),
+        "race_margin": float(race_margin),
+        "indirect_value": float(indirect_value.get(target.id, 0.0)),
+        "heuristic_score_scaled": float(candidate.score) / 100.0,
+        "kind_expand": 1.0 if kind == "expand" else 0.0,
+        "kind_attack": 1.0 if kind == "attack" else 0.0,
+        "kind_comet": 1.0 if kind == "comet" else 0.0,
+        "kind_snipe": 1.0 if kind == "snipe" else 0.0,
+        "kind_recapture": 1.0 if kind == "recapture" else 0.0,
+        "kind_crash": 1.0 if kind == "crash" else 0.0,
+        "kind_stage": 1.0 if kind == "stage" else 0.0,
+        "kind_defend": 1.0 if kind == "defend" else 0.0,
+        "kind_evacuate": 1.0 if kind == "evacuate" else 0.0,
+    }
+    return features
+
+
+def _model_score_candidate(features, model=None):
+    model = MODEL_WEIGHTS if model is None else model
+    if not model:
+        return 0.0
+    weights = model.get("weights", {})
+    if not weights:
+        return 0.0
+    means = model.get("mean", {})
+    scales = model.get("scale", {})
+    score = float(model.get("bias", 0.0))
+    for name, weight in weights.items():
+        value = float(features.get(name, 0.0))
+        scale = float(scales.get(name, 1.0) or 1.0)
+        value = (value - float(means.get(name, 0.0))) / scale
+        score += float(weight) * value
+
+    model_type = str(model.get("model_type", ""))
+    if model_type.startswith("logistic"):
+        if score >= 0:
+            prob = 1.0 / (1.0 + math.exp(-min(50.0, score)))
+        else:
+            exp_score = math.exp(max(-50.0, score))
+            prob = exp_score / (1.0 + exp_score)
+        return (prob - 0.5) * 120.0
+    return score
+
+
+def _score_candidate_v5(state, candidate, policy=None):
+    score = float(candidate.score)
+    if USE_MODEL_SCORER and MODEL_WEIGHTS:
+        features = _candidate_features(state, candidate, policy)
+        model_score = _model_score_candidate(features, MODEL_WEIGHTS)
+        score = score * (1.0 - MODEL_BLEND) + (score + model_score) * MODEL_BLEND
+    return score
+
+
+def _planner_projected_value(state, candidate, policy=None):
+    target = state.planet_by_id.get(candidate.target_id)
+    if target is None:
+        return -9999.0
+    remaining = max(0.0, min(float(PLANNER_HORIZON), state.turns_left() - candidate.eta))
+    if remaining <= 0:
+        return -candidate.ships * 0.12
+
+    owner_at_eta, garrison_at_eta = state.ledger.state_at(target.id, candidate.eta)
+    value = 0.0
+    if candidate.kind == "expand":
+        value += target.production * remaining * (1.05 if state.is_static(target) else 0.82)
+        value -= max(0.0, garrison_at_eta - target.ships) * 0.10
+    elif candidate.kind == "attack":
+        value += target.production * remaining * 1.35
+        value += target.ships * 0.22
+        if owner_at_eta not in (-1, state.player):
+            value += 12.0
+    elif candidate.kind == "comet":
+        value += target.production * min(remaining, 22.0) * 0.70
+        value -= candidate.eta * 0.35
+
+    if policy is not None:
+        value += policy["indirect_value"].get(target.id, 0.0) * min(remaining, 28.0) * 0.07
+
+    enemy_eta, enemy_ships, _ = state.enemy_reach(target)
+    race_margin = enemy_eta - candidate.eta
+    if race_margin >= 9.0:
+        value += min(18.0, race_margin * 1.1)
+    elif race_margin <= 2.0:
+        value -= min(45.0, 12.0 + enemy_ships * 0.12)
+
+    value -= candidate.ships * 0.06
+    return value
+
+
 def _build_single_capture_candidate(
     state,
     target,
@@ -2059,6 +2236,100 @@ def _opening_planner_moves(state, policy, deadline):
     return moves or None
 
 
+def _copy_planned_commitments(planned_commitments):
+    return {
+        target_id: list(arrivals)
+        for target_id, arrivals in (planned_commitments or {}).items()
+    }
+
+
+def _deep_planner_select(state, available, claimed_targets, planned_commitments, policy, deadline):
+    if not USE_DEEP_PLANNER:
+        return []
+    now = time.perf_counter()
+    if now >= deadline - SPECULATIVE_TIME_MARGIN:
+        return []
+    if state.turns_left() <= 3:
+        return []
+
+    stop_at = min(deadline - SPECULATIVE_TIME_MARGIN * 0.55, now + PLANNER_BUDGET)
+    beam = [
+        {
+            "available": dict(available),
+            "claimed": set(claimed_targets),
+            "planned": _copy_planned_commitments(planned_commitments),
+            "picks": (),
+            "parts": 0,
+            "value": 0.0,
+        }
+    ]
+    best = beam[0]
+
+    for _ in range(PLANNER_MAX_PICKS):
+        if time.perf_counter() >= stop_at:
+            break
+        expanded = []
+        for entry in beam:
+            if time.perf_counter() >= stop_at:
+                break
+            candidates = _generate_capture_candidates(
+                state,
+                entry["available"],
+                entry["claimed"],
+                planned_commitments=entry["planned"],
+                policy=policy,
+            )
+            scored = []
+            for candidate in candidates:
+                if candidate.kind not in ("expand", "attack", "comet"):
+                    continue
+                score = _score_candidate_v5(state, candidate, policy)
+                bundle_value = score + _planner_projected_value(state, candidate, policy)
+                if bundle_value < _selection_threshold(state, candidate):
+                    continue
+                scored.append((bundle_value, candidate))
+            if not scored:
+                continue
+            scored.sort(key=lambda item: item[0], reverse=True)
+
+            for bundle_value, candidate in scored[:PLANNER_TOP_CANDIDATES]:
+                if entry["parts"] + len(candidate.parts) > MAX_MOVES:
+                    continue
+                next_available = dict(entry["available"])
+                next_claimed = set(entry["claimed"])
+                next_planned = _copy_planned_commitments(entry["planned"])
+                test_moves = []
+                if not _apply_candidate(
+                    candidate,
+                    next_available,
+                    test_moves,
+                    next_planned,
+                    state.player,
+                ):
+                    continue
+                next_claimed.add(candidate.target_id)
+                next_entry = {
+                    "available": next_available,
+                    "claimed": next_claimed,
+                    "planned": next_planned,
+                    "picks": entry["picks"] + (candidate,),
+                    "parts": entry["parts"] + len(candidate.parts),
+                    "value": entry["value"] + bundle_value,
+                }
+                expanded.append(next_entry)
+
+        if not expanded:
+            break
+        expanded.sort(key=lambda item: item["value"], reverse=True)
+        beam = expanded[:PLANNER_BEAM]
+        if beam[0]["value"] > best["value"]:
+            best = beam[0]
+
+    if best["picks"] and best["value"] > 0.0:
+        return list(best["picks"])
+    return []
+
+
 def _choose_moves(state, deadline=None):
     if deadline is None:
         deadline = time.perf_counter() + 0.82
@@ -2125,7 +2396,27 @@ def _choose_moves(state, deadline=None):
         if len(moves) >= MAX_MOVES:
             return moves[:MAX_MOVES]
 
-    for _ in range(8):
+    planner_applied = False
+    if time.perf_counter() < deadline - SPECULATIVE_TIME_MARGIN:
+        for candidate in _deep_planner_select(
+            state, available, claimed_targets, planned_commitments, policy, deadline
+        ):
+            if candidate.target_id in claimed_targets:
+                continue
+            if _score_candidate_v5(state, candidate, policy) < _selection_threshold(
+                state, candidate
+            ):
+                continue
+            if _apply_candidate(
+                candidate, available, moves, planned_commitments, state.player
+            ):
+                planner_applied = True
+                claimed_targets.add(candidate.target_id)
+            if len(moves) >= MAX_MOVES:
+                return moves[:MAX_MOVES]
+
+    fallback_iterations = 4 if planner_applied else 8
+    for _ in range(fallback_iterations):
         candidates = _generate_capture_candidates(
             state,
             available,
@@ -2135,9 +2426,9 @@ def _choose_moves(state, deadline=None):
         )
         if not candidates:
             break
-        candidates.sort(key=lambda c: c.score, reverse=True)
+        candidates.sort(key=lambda c: _score_candidate_v5(state, c, policy), reverse=True)
         chosen = candidates[0]
-        if chosen.score < _selection_threshold(state, chosen):
+        if _score_candidate_v5(state, chosen, policy) < _selection_threshold(state, chosen):
             break
         if _apply_candidate(chosen, available, moves, planned_commitments, state.player):
             claimed_targets.add(chosen.target_id)
