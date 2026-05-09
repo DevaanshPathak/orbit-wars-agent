@@ -39,6 +39,14 @@ STAGING_MAX_ETA = 42
 PARTIAL_SOURCE_MIN_SHIPS = 6
 PROACTIVE_DEFENSE_HORIZON = 12
 
+USE_OPENING_PLANNER = True
+USE_SNIPES = True
+USE_RECAPTURE = True
+USE_STAGING = False
+USE_CRASH_EXPLOITS = True
+USE_ENDGAME_SCORE_MODE = True
+SPECULATIVE_TIME_MARGIN = 0.14
+
 Candidate = namedtuple(
     "Candidate",
     ["kind", "score", "target_id", "parts", "eta", "ships", "reason"],
@@ -1091,16 +1099,16 @@ def _aligned_part_for_turn(source, target, desired_turn, max_send, state):
         max_send,
     }
     best = None
-    for ships in sorted(candidates, reverse=True):
+    for ships in sorted(candidates):
         if ships <= 0 or ships > max_send:
             continue
         intercept = _validated_intercept(source, target, ships, state, desired_turn + 2)
         if intercept is None:
             continue
         angle, eta = intercept
-        if abs(eta - desired_turn) <= 1.0:
+        if abs(eta - desired_turn) <= 0.75:
             part = (source.id, angle, ships, eta)
-            if best is None or part[2] > best[2]:
+            if best is None or part[2] < best[2]:
                 best = part
     return best
 
@@ -1161,7 +1169,7 @@ def _candidate_score(state, target, send, eta, kind, policy=None):
         score += target.ships * 0.25
         if state.my_production < state.enemy_production:
             score += target.production * 9.0
-    if state.step > ENDGAME_STEP:
+    if USE_ENDGAME_SCORE_MODE and state.step > ENDGAME_STEP:
         remaining = max(0.0, state.turns_left() - eta)
         if owner == -1:
             score = target.production * remaining - target.ships * 1.3 - send * 0.22
@@ -1533,6 +1541,8 @@ def _generate_evacuation_candidates(state, available, protected_targets):
 
 
 def _generate_snipe_candidates(state, available, planned_commitments, policy):
+    if not USE_SNIPES:
+        return []
     candidates = []
     targets = [
         p
@@ -1574,7 +1584,9 @@ def _generate_snipe_candidates(state, available, planned_commitments, policy):
                 )
                 if need <= 0 or need > max_send:
                     continue
-                send = min(max_send, max(need, need + 1))
+                if max_send > max(need + 14, int(need * 2.25) + 2):
+                    continue
+                send = max_send
                 score = _candidate_score(
                     state, target, send, float(sync_turn), "snipe", policy=policy
                 )
@@ -1596,6 +1608,8 @@ def _generate_snipe_candidates(state, available, planned_commitments, policy):
 
 
 def _generate_recapture_candidates(state, available, planned_commitments, policy, protected_targets):
+    if not USE_RECAPTURE:
+        return []
     candidates = []
     for target in state.my_planets:
         if target.id in protected_targets:
@@ -1628,7 +1642,9 @@ def _generate_recapture_candidates(state, available, planned_commitments, policy
                 )
                 if need <= 0 or need > max_send:
                     continue
-                send = min(max_send, need + 2)
+                if max_send > max(need + 16, int(need * 1.9) + 3):
+                    continue
+                send = max_send
                 saved_turns = max(1.0, state.turns_left() - desired_turn)
                 score = (
                     390.0
@@ -1655,6 +1671,8 @@ def _generate_recapture_candidates(state, available, planned_commitments, policy
 
 
 def _generate_staging_candidates(state, available):
+    if not USE_STAGING:
+        return []
     if len(state.my_planets) < 3 or state.step > ENDGAME_STEP:
         return []
     objectives = state.enemy_planets or state.neutral_planets
@@ -1705,6 +1723,8 @@ def _generate_staging_candidates(state, available):
 
 
 def _generate_crash_exploit_candidates(state, available, planned_commitments, policy):
+    if not USE_CRASH_EXPLOITS:
+        return []
     if state.num_players < 4:
         return []
     candidates = []
@@ -1740,7 +1760,9 @@ def _generate_crash_exploit_candidates(state, available, planned_commitments, po
                 )
                 if need <= 0 or need > max_send:
                     continue
-                send = min(max_send, need + 1)
+                if max_send > max(need + 12, int(need * 1.8) + 2):
+                    continue
+                send = max_send
                 score = _candidate_score(
                     state, target, send, desired_turn, "attack", policy=policy
                 ) + 38.0
@@ -1947,6 +1969,10 @@ def _opening_evaluate_plan(state, plan, policy):
 
 
 def _opening_planner_moves(state, policy, deadline):
+    if not USE_OPENING_PLANNER:
+        return None
+    if time.perf_counter() >= deadline - SPECULATIVE_TIME_MARGIN:
+        return None
     if state.step >= OPENING_PLANNER_LIMIT:
         return None
     if state.num_players != 2 or len(state.my_planets) > OPENING_PLAN_MAX_MY_PLANETS:
@@ -2074,17 +2100,19 @@ def _choose_moves(state, deadline=None):
         if len(moves) >= MAX_MOVES:
             return moves[:MAX_MOVES]
 
-    tactical_candidates = sorted(
-        _generate_snipe_candidates(state, available, planned_commitments, policy)
-        + _generate_recapture_candidates(
-            state, available, planned_commitments, policy, protected_targets
+    tactical_candidates = []
+    if time.perf_counter() < deadline - SPECULATIVE_TIME_MARGIN:
+        tactical_candidates = sorted(
+            _generate_snipe_candidates(state, available, planned_commitments, policy)
+            + _generate_recapture_candidates(
+                state, available, planned_commitments, policy, protected_targets
+            )
+            + _generate_crash_exploit_candidates(
+                state, available, planned_commitments, policy
+            ),
+            key=lambda c: c.score,
+            reverse=True,
         )
-        + _generate_crash_exploit_candidates(
-            state, available, planned_commitments, policy
-        ),
-        key=lambda c: c.score,
-        reverse=True,
-    )
     for candidate in tactical_candidates:
         if candidate.target_id in claimed_targets and candidate.kind not in ("recapture",):
             continue
@@ -2118,7 +2146,7 @@ def _choose_moves(state, deadline=None):
         if len(moves) >= MAX_MOVES:
             break
 
-    if len(moves) < MAX_MOVES:
+    if len(moves) < MAX_MOVES and time.perf_counter() < deadline - SPECULATIVE_TIME_MARGIN:
         staging_candidates = sorted(
             _generate_staging_candidates(state, available),
             key=lambda c: c.score,
