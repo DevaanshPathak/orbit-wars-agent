@@ -1,4 +1,5 @@
 import math
+import time
 from collections import namedtuple
 
 from kaggle_environments.envs.orbit_wars.orbit_wars import Fleet, Planet
@@ -19,6 +20,24 @@ MAX_MOVES = 14
 OPENING_END_STEP = 80
 ENDGAME_STEP = 405
 EVACUATE_HORIZON = 14
+
+OPENING_PLANNER_LIMIT = 50
+OPENING_PLANNER_BUDGET = 0.18
+OPENING_PLAN_DEPTH_ONE = 4
+OPENING_PLAN_DEPTH_FEW = 3
+OPENING_PLAN_DEPTH_MANY = 2
+OPENING_PLAN_BEAM = 5
+OPENING_PLAN_TARGETS = 10
+OPENING_PLAN_WAIT = 12
+OPENING_PLAN_MAX_MY_PLANETS = 5
+OPENING_PLAN_DEFENSE_GATE = 15
+
+SNIPE_HORIZON = 55
+RECAPTURE_WINDOW = 10
+STAGING_MIN_SHIPS = 12
+STAGING_MAX_ETA = 42
+PARTIAL_SOURCE_MIN_SHIPS = 6
+PROACTIVE_DEFENSE_HORIZON = 12
 
 Candidate = namedtuple(
     "Candidate",
@@ -72,6 +91,12 @@ def as_fleets(obs):
 
 def dist(a, b):
     return math.hypot(a[0] - b[0], a[1] - b[1])
+
+
+def planet_is_static(planet, initial_by_id=None):
+    initial = initial_by_id.get(planet.id) if initial_by_id is not None else None
+    base = initial if initial is not None else planet
+    return dist((base.x, base.y), (CENTER, CENTER)) + planet.radius >= ROTATION_RADIUS_LIMIT
 
 
 def point_to_segment_distance(point, start, end):
@@ -531,25 +556,37 @@ class GameState:
         self.neutral_planets = [
             p for p in self.planets if p.owner == -1 and p.id not in self.comet_ids
         ]
+        self.static_neutral_planets = [
+            p for p in self.neutral_planets if planet_is_static(p, self.initial_by_id)
+        ]
         self.comet_planets = [p for p in self.planets if p.id in self.comet_ids]
         self.planet_path_cache = self._build_planet_path_cache(
             max(LEDGER_HORIZON, MAX_ETA) + 2
         )
         self.ledger = ArrivalLedger(self)
-        self.totals = {
-            owner: self._total_ships(owner)
+        self.owner_strength = {owner: self._total_ships(owner) for owner in range(4)}
+        self.owner_production = {
+            owner: sum(p.production for p in self.planets if p.owner == owner)
             for owner in range(4)
         }
+        self.totals = self.owner_strength
         self.my_total = self.totals.get(self.player, 0)
         self.enemy_total = sum(
             total for owner, total in self.totals.items() if owner != self.player
         )
         self.my_production = sum(p.production for p in self.my_planets)
         self.enemy_production = sum(p.production for p in self.enemy_planets)
+        self.max_enemy_total = max(
+            (total for owner, total in self.totals.items() if owner != self.player),
+            default=0,
+        )
         self.enemy_players = [
             owner for owner, total in self.totals.items() if owner != self.player and total > 0
         ]
+        self.num_players = 1 + len(self.enemy_players)
         self._enemy_reach_cache = {}
+        self._my_reach_cache = {}
+        self._projected_state_cache = {}
 
     def _total_ships(self, owner):
         return sum(p.ships for p in self.planets if p.owner == owner) + sum(
@@ -630,6 +667,214 @@ class GameState:
     def turns_left(self):
         return max(0, 499 - self.step)
 
+    def is_static(self, planet):
+        return planet_is_static(planet, self.initial_by_id)
+
+    def my_reach(self, target):
+        if target.id in self._my_reach_cache:
+            return self._my_reach_cache[target.id]
+
+        best = (999.0, 0, None)
+        horizon = min(MAX_ETA, max(1, self.turns_left() - 1))
+        for source in self.my_planets:
+            if source.id == target.id:
+                continue
+            available = max(0, int(source.ships - self.reserve_for(source)))
+            if available <= 0:
+                continue
+            intercept = solve_intercept_angle(
+                (source.x, source.y), target.id, available, self.step, self.obs
+            )
+            if intercept is None:
+                continue
+            _, eta = intercept
+            if eta <= horizon and eta < best[0]:
+                best = (eta, available, source.id)
+
+        self._my_reach_cache[target.id] = best
+        return best
+
+    def reaction_times(self, target):
+        return self.my_reach(target)[0], self.enemy_reach(target)[0]
+
+    def projected_state(
+        self,
+        planet_id,
+        eval_turn,
+        planned_commitments=None,
+        extra_arrivals=(),
+    ):
+        eval_turn = max(0, int(math.ceil(eval_turn)))
+        planned_commitments = planned_commitments or {}
+        normalized_extra = tuple(
+            (max(1, int(math.ceil(turn))), int(owner), int(ships))
+            for turn, owner, ships in extra_arrivals
+            if ships > 0 and max(1, int(math.ceil(turn))) <= eval_turn
+        )
+        cache_key = None
+        if not planned_commitments.get(planet_id) and not normalized_extra:
+            cache_key = (planet_id, eval_turn)
+            cached = self._projected_state_cache.get(cache_key)
+            if cached is not None:
+                return cached
+
+        planet = self.planet_by_id.get(planet_id)
+        if planet is None:
+            return -1, 0.0
+
+        by_turn = {}
+        for turn, arrivals in self.ledger.arrivals.get(planet_id, {}).items():
+            turn = max(1, int(math.ceil(turn)))
+            if turn > eval_turn:
+                continue
+            slot = by_turn.setdefault(turn, {})
+            for owner, ships in arrivals.items():
+                slot[owner] = slot.get(owner, 0) + int(ships)
+
+        for turn, owner, ships in planned_commitments.get(planet_id, []):
+            turn = max(1, int(math.ceil(turn)))
+            if turn > eval_turn or ships <= 0:
+                continue
+            slot = by_turn.setdefault(turn, {})
+            slot[owner] = slot.get(owner, 0) + int(ships)
+
+        for turn, owner, ships in normalized_extra:
+            slot = by_turn.setdefault(turn, {})
+            slot[owner] = slot.get(owner, 0) + int(ships)
+
+        owner = planet.owner
+        garrison = float(planet.ships)
+        for turn in range(1, eval_turn + 1):
+            if owner != -1:
+                garrison += planet.production
+            owner, garrison = _resolve_combat(owner, garrison, by_turn.get(turn, {}))
+
+        result = (owner, max(0.0, garrison))
+        if cache_key is not None:
+            self._projected_state_cache[cache_key] = result
+        return result
+
+    def _ownership_search_cap(self, eval_turn):
+        visible = sum(int(p.ships) for p in self.planets) + sum(
+            int(f.ships) for f in self.fleets
+        )
+        production = sum(int(p.production) for p in self.planets)
+        return max(32, int(visible + production * max(2, eval_turn + 2) + 32))
+
+    def min_ships_to_own_by(
+        self,
+        planet_id,
+        eval_turn,
+        attacker_owner,
+        arrival_turn=None,
+        planned_commitments=None,
+        upper_bound=None,
+    ):
+        eval_turn = max(1, int(math.ceil(eval_turn)))
+        arrival_turn = eval_turn if arrival_turn is None else max(1, int(math.ceil(arrival_turn)))
+        if arrival_turn > eval_turn:
+            return (int(upper_bound) + 1) if upper_bound is not None else self._ownership_search_cap(eval_turn) + 1
+
+        owner_before, ships_before = self.projected_state(
+            planet_id, eval_turn, planned_commitments=planned_commitments
+        )
+        if owner_before == attacker_owner:
+            return 0
+
+        def owns_with(ships):
+            owner_after, _ = self.projected_state(
+                planet_id,
+                eval_turn,
+                planned_commitments=planned_commitments,
+                extra_arrivals=((arrival_turn, attacker_owner, int(ships)),),
+            )
+            return owner_after == attacker_owner
+
+        if upper_bound is not None:
+            hi = max(1, int(upper_bound))
+            if not owns_with(hi):
+                return hi + 1
+        else:
+            hi = max(1, int(math.ceil(ships_before)) + 1)
+            cap = self._ownership_search_cap(eval_turn)
+            while hi < cap and not owns_with(hi):
+                hi *= 2
+            hi = min(hi, cap)
+            if not owns_with(hi):
+                return hi + 1
+
+        lo = 1
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if owns_with(mid):
+                hi = mid
+            else:
+                lo = mid + 1
+        return lo
+
+    def min_ships_to_own_at(
+        self,
+        planet_id,
+        arrival_turn,
+        attacker_owner=None,
+        planned_commitments=None,
+        upper_bound=None,
+    ):
+        attacker = self.player if attacker_owner is None else attacker_owner
+        return self.min_ships_to_own_by(
+            planet_id,
+            arrival_turn,
+            attacker,
+            arrival_turn=arrival_turn,
+            planned_commitments=planned_commitments,
+            upper_bound=upper_bound,
+        )
+
+    def reinforcement_needed_to_hold_until(
+        self,
+        planet_id,
+        arrival_turn,
+        hold_until,
+        planned_commitments=None,
+        upper_bound=None,
+    ):
+        arrival_turn = max(1, int(math.ceil(arrival_turn)))
+        hold_until = max(arrival_turn, int(math.ceil(hold_until)))
+
+        def holds_with(ships):
+            for turn in range(arrival_turn, hold_until + 1):
+                owner, _ = self.projected_state(
+                    planet_id,
+                    turn,
+                    planned_commitments=planned_commitments,
+                    extra_arrivals=((arrival_turn, self.player, int(ships)),),
+                )
+                if owner != self.player:
+                    return False
+            return True
+
+        if upper_bound is not None:
+            hi = max(1, int(upper_bound))
+            if not holds_with(hi):
+                return hi + 1
+        else:
+            hi = 1
+            cap = self._ownership_search_cap(hold_until)
+            while hi < cap and not holds_with(hi):
+                hi *= 2
+            hi = min(hi, cap)
+            if not holds_with(hi):
+                return hi + 1
+
+        lo = 1
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if holds_with(mid):
+                hi = mid
+            else:
+                lo = mid + 1
+        return lo
+
     def reserve_for(self, planet):
         if planet.id in self.comet_ids:
             return 0
@@ -708,6 +953,57 @@ class GameState:
         if margin <= 10.0 and enemy_ships >= needed:
             return max(2, int(enemy_ships * 0.12))
         return 0
+
+
+def _nearest_distance_to_set(point, planets):
+    if not planets:
+        return 999.0
+    return min(dist(point, (planet.x, planet.y)) for planet in planets)
+
+
+def _build_policy(state):
+    reaction_time_map = {}
+    indirect_value = {}
+    attack_budget = {}
+    reserve = {}
+
+    for target in state.planets:
+        if target.owner != state.player:
+            reaction_time_map[target.id] = state.reaction_times(target)
+
+        nearby_neutral = 0.0
+        nearby_enemy = 0.0
+        nearby_mine = 0.0
+        for other in state.planets:
+            if other.id == target.id:
+                continue
+            weight = other.production / max(8.0, dist((target.x, target.y), (other.x, other.y)))
+            if other.owner == state.player:
+                nearby_mine += weight
+            elif other.owner == -1:
+                nearby_neutral += weight
+            else:
+                nearby_enemy += weight
+        indirect_value[target.id] = nearby_neutral * 0.9 + nearby_enemy * 1.25 + nearby_mine * 0.35
+
+    for planet in state.my_planets:
+        keep = state.reserve_for(planet)
+        enemy_eta, enemy_ships, _ = state.enemy_reach(planet)
+        if enemy_eta <= PROACTIVE_DEFENSE_HORIZON:
+            keep = max(keep, int(enemy_ships * 0.18) + planet.production)
+        reserve[planet.id] = min(int(planet.ships), max(0, int(keep)))
+        attack_budget[planet.id] = max(0, int(planet.ships) - reserve[planet.id])
+
+    return {
+        "reaction_time_map": reaction_time_map,
+        "indirect_value": indirect_value,
+        "reserve": reserve,
+        "attack_budget": attack_budget,
+    }
+
+
+def _policy_reaction_times(policy, target_id):
+    return policy["reaction_time_map"].get(target_id, (999.0, 999.0))
 
 
 def _turn_weight(state, eta):
@@ -809,7 +1105,7 @@ def _aligned_part_for_turn(source, target, desired_turn, max_send, state):
     return best
 
 
-def _candidate_score(state, target, send, eta, kind):
+def _candidate_score(state, target, send, eta, kind, policy=None):
     turns = _turn_weight(state, eta)
     owner, garrison = state.ledger.state_at(target.id, eta)
     if owner == state.player:
@@ -828,6 +1124,8 @@ def _candidate_score(state, target, send, eta, kind):
     score -= send * 0.74
     score -= eta * 0.42
     score -= max(0.0, garrison - target.ships) * 0.12
+    if policy is not None:
+        score += policy["indirect_value"].get(target.id, 0.0) * turns * 0.08
 
     enemy_eta, enemy_ships, _ = state.enemy_reach(target)
     race_margin = enemy_eta - eta
@@ -844,6 +1142,16 @@ def _candidate_score(state, target, send, eta, kind):
 
     if target.production >= 4:
         score += 18.0
+    if state.is_static(target):
+        score += 12.0
+        if state.step < 90 and owner == -1:
+            score += target.production * 8.0
+    elif state.step < OPENING_END_STEP and owner == -1:
+        my_t, enemy_t = _policy_reaction_times(policy, target.id) if policy else state.reaction_times(target)
+        if eta > 13.0 and enemy_t - my_t < 3.0:
+            score -= 24.0
+        if target.production <= 2:
+            score -= 12.0
     if state.step < 70 and owner == -1:
         score += target.production * 7.0
         score -= target.ships * 0.18
@@ -865,7 +1173,15 @@ def _candidate_score(state, target, send, eta, kind):
     return score
 
 
-def _build_single_capture_candidate(state, target, source, available, kind):
+def _build_single_capture_candidate(
+    state,
+    target,
+    source,
+    available,
+    kind,
+    planned_commitments=None,
+    policy=None,
+):
     source_available = available.get(source.id, 0)
     if source_available <= 0:
         return None
@@ -883,7 +1199,14 @@ def _build_single_capture_candidate(state, target, source, available, kind):
     if kind == "comet" and eta > 18:
         return None
 
-    needed = state.ledger.needed_to_capture(target.id, eta, state.player)
+    needed = state.min_ships_to_own_at(
+        target.id,
+        eta,
+        planned_commitments=planned_commitments,
+        upper_bound=source_available,
+    )
+    if needed <= 0:
+        return None
     race_buffer = state.race_buffer(target, eta, needed)
     if race_buffer >= 10**6:
         return None
@@ -903,7 +1226,14 @@ def _build_single_capture_candidate(state, target, source, available, kind):
     if eta > state.turns_left() - 1:
         return None
 
-    needed = state.ledger.needed_to_capture(target.id, eta, state.player)
+    needed = state.min_ships_to_own_at(
+        target.id,
+        eta,
+        planned_commitments=planned_commitments,
+        upper_bound=source_available,
+    )
+    if needed <= 0:
+        return None
     race_buffer = state.race_buffer(target, eta, needed)
     if race_buffer >= 10**6:
         return None
@@ -917,11 +1247,11 @@ def _build_single_capture_candidate(state, target, source, available, kind):
         return None
     angle, eta = intercept
 
-    score = _candidate_score(state, target, send, eta, kind)
+    score = _candidate_score(state, target, send, eta, kind, policy=policy)
     return Candidate(kind, score, target.id, ((source.id, angle, send),), eta, send, kind)
 
 
-def _build_multi_attack_candidate(state, target, available):
+def _build_multi_attack_candidate(state, target, available, planned_commitments=None, policy=None):
     options = []
     sources = sorted(
         [p for p in state.my_planets if available.get(p.id, 0) > 0],
@@ -961,7 +1291,16 @@ def _build_multi_attack_candidate(state, target, available):
         if len(aligned) < 2:
             continue
 
-        needed = state.ledger.needed_to_capture(target.id, target_turn, state.player) + 4
+        total_cap = sum(source_available for _, _, _, source_available in options)
+        needed = state.min_ships_to_own_at(
+            target.id,
+            target_turn,
+            planned_commitments=planned_commitments,
+            upper_bound=total_cap,
+        )
+        if needed <= 0:
+            continue
+        needed += 4
         race_buffer = state.race_buffer(target, float(target_turn), needed)
         if race_buffer >= 10**6:
             continue
@@ -986,7 +1325,9 @@ def _build_multi_attack_candidate(state, target, available):
 
         if committed < needed:
             continue
-        score = _candidate_score(state, target, committed, float(target_turn), "attack")
+        score = _candidate_score(
+            state, target, committed, float(target_turn), "attack", policy=policy
+        )
         score += target.production * 12.0
         candidate = Candidate(
             "attack",
@@ -1011,6 +1352,10 @@ def _target_priority(state, target):
         priority += target.production * 3.5 - max(0.0, 18.0 - enemy_eta)
     if owner not in (-1, state.player):
         priority += target.production * 8.0 + target.ships * 0.15
+    if state.is_static(target):
+        priority += 7.0
+        if owner == -1 and state.step < 90:
+            priority += target.production * 4.0
     if target.id in state.comet_ids:
         priority = 8.0 - target.ships * 0.4 - _nearest_owned_distance(state, target) * 0.1
     if state.step > ENDGAME_STEP and owner != -1:
@@ -1034,7 +1379,13 @@ def _candidate_targets(state, claimed_targets):
     return filtered[:14]
 
 
-def _generate_capture_candidates(state, available, claimed_targets):
+def _generate_capture_candidates(
+    state,
+    available,
+    claimed_targets,
+    planned_commitments=None,
+    policy=None,
+):
     candidates = []
     for target in _candidate_targets(state, claimed_targets):
         owner, _ = state.ledger.state_at(target.id, 1)
@@ -1054,13 +1405,25 @@ def _generate_capture_candidates(state, available, claimed_targets):
         )[:5]
         for source in sources:
             candidate = _build_single_capture_candidate(
-                state, target, source, available, kind
+                state,
+                target,
+                source,
+                available,
+                kind,
+                planned_commitments=planned_commitments,
+                policy=policy,
             )
             if candidate is not None:
                 candidates.append(candidate)
 
         if kind == "attack" and target.production >= 4 and state.step > OPENING_END_STEP:
-            candidate = _build_multi_attack_candidate(state, target, available)
+            candidate = _build_multi_attack_candidate(
+                state,
+                target,
+                available,
+                planned_commitments=planned_commitments,
+                policy=policy,
+            )
             if candidate is not None:
                 candidates.append(candidate)
 
@@ -1169,21 +1532,258 @@ def _generate_evacuation_candidates(state, available, protected_targets):
     return candidates
 
 
-def _apply_candidate(candidate, available, moves):
+def _generate_snipe_candidates(state, available, planned_commitments, policy):
+    candidates = []
+    targets = [
+        p
+        for p in state.neutral_planets + state.comet_planets
+        if p.owner == -1 and p.ships <= 28
+    ]
+    for target in targets:
+        arrivals = state.ledger.arrivals.get(target.id, {})
+        enemy_turns = sorted(
+            turn
+            for turn, by_owner in arrivals.items()
+            if turn <= SNIPE_HORIZON
+            and any(owner != state.player and ships > 0 for owner, ships in by_owner.items())
+        )
+        if not enemy_turns:
+            continue
+
+        for enemy_turn in enemy_turns[:3]:
+            sync_turn = int(enemy_turn) + 1
+            best_for_target = None
+            for source in sorted(
+                [p for p in state.my_planets if available.get(p.id, 0) >= PARTIAL_SOURCE_MIN_SHIPS],
+                key=lambda p: dist((p.x, p.y), (target.x, target.y)),
+            )[:5]:
+                source_cap = available[source.id]
+                part = _aligned_part_for_turn(source, target, sync_turn, source_cap, state)
+                if part is None:
+                    continue
+                source_id, angle, max_send, eta = part
+                if eta > sync_turn + 1.0:
+                    continue
+                need = state.min_ships_to_own_by(
+                    target.id,
+                    sync_turn,
+                    state.player,
+                    arrival_turn=eta,
+                    planned_commitments=planned_commitments,
+                    upper_bound=max_send,
+                )
+                if need <= 0 or need > max_send:
+                    continue
+                send = min(max_send, max(need, need + 1))
+                score = _candidate_score(
+                    state, target, send, float(sync_turn), "snipe", policy=policy
+                )
+                score += 42.0 + target.production * 8.0 - max(0, sync_turn - enemy_turn) * 3.0
+                candidate = Candidate(
+                    "snipe",
+                    score,
+                    target.id,
+                    ((source_id, angle, send),),
+                    float(sync_turn),
+                    send,
+                    "enemy_arrival_snipe",
+                )
+                if best_for_target is None or candidate.score > best_for_target.score:
+                    best_for_target = candidate
+            if best_for_target is not None:
+                candidates.append(best_for_target)
+    return candidates
+
+
+def _generate_recapture_candidates(state, available, planned_commitments, policy, protected_targets):
+    candidates = []
+    for target in state.my_planets:
+        if target.id in protected_targets:
+            continue
+        fall_turn = state.ledger.first_not_owned_turn(
+            target.id, state.player, DEFENSE_HORIZON
+        )
+        if fall_turn is None or fall_turn > DEFENSE_HORIZON:
+            continue
+
+        for source in sorted(
+            [p for p in state.my_planets if p.id != target.id and available.get(p.id, 0) >= PARTIAL_SOURCE_MIN_SHIPS],
+            key=lambda p: dist((p.x, p.y), (target.x, target.y)),
+        )[:5]:
+            source_cap = available[source.id]
+            for desired_turn in range(fall_turn + 1, min(fall_turn + RECAPTURE_WINDOW, DEFENSE_HORIZON) + 1):
+                part = _aligned_part_for_turn(source, target, desired_turn, source_cap, state)
+                if part is None:
+                    continue
+                source_id, angle, max_send, eta = part
+                if eta <= fall_turn or eta > desired_turn + 1.0:
+                    continue
+                need = state.min_ships_to_own_by(
+                    target.id,
+                    desired_turn,
+                    state.player,
+                    arrival_turn=eta,
+                    planned_commitments=planned_commitments,
+                    upper_bound=max_send,
+                )
+                if need <= 0 or need > max_send:
+                    continue
+                send = min(max_send, need + 2)
+                saved_turns = max(1.0, state.turns_left() - desired_turn)
+                score = (
+                    390.0
+                    + target.production * saved_turns * 0.62
+                    + target.ships * 0.35
+                    - send * 0.55
+                    - desired_turn * 1.8
+                )
+                if policy is not None:
+                    score += policy["indirect_value"].get(target.id, 0.0) * 5.0
+                candidates.append(
+                    Candidate(
+                        "recapture",
+                        score,
+                        target.id,
+                        ((source_id, angle, send),),
+                        float(desired_turn),
+                        send,
+                        "retake_after_fall",
+                    )
+                )
+                break
+    return candidates
+
+
+def _generate_staging_candidates(state, available):
+    if len(state.my_planets) < 3 or state.step > ENDGAME_STEP:
+        return []
+    objectives = state.enemy_planets or state.neutral_planets
+    if not objectives:
+        return []
+
+    safe_fronts = [
+        p
+        for p in state.my_planets
+        if state.ledger.first_not_owned_turn(p.id, state.player, DEFENSE_HORIZON) is None
+    ]
+    if len(safe_fronts) < 2:
+        return []
+
+    frontier_distance = {
+        p.id: _nearest_distance_to_set((p.x, p.y), objectives) for p in state.my_planets
+    }
+    front = min(safe_fronts, key=lambda p: (frontier_distance[p.id], -p.production))
+    candidates = []
+    for source in sorted(state.my_planets, key=lambda p: -frontier_distance[p.id]):
+        if source.id == front.id or available.get(source.id, 0) < STAGING_MIN_SHIPS:
+            continue
+        if frontier_distance[source.id] < frontier_distance[front.id] * 1.22:
+            continue
+        send = int(available[source.id] * (0.68 if state.num_players >= 4 else 0.58))
+        if send < STAGING_MIN_SHIPS:
+            continue
+        intercept = _validated_intercept(source, front, send, state, STAGING_MAX_ETA)
+        if intercept is None:
+            continue
+        angle, eta = intercept
+        if eta > STAGING_MAX_ETA:
+            continue
+        score = 24.0 + send * 0.28 + (frontier_distance[source.id] - frontier_distance[front.id]) * 0.7
+        candidates.append(
+            Candidate(
+                "stage",
+                score,
+                front.id,
+                ((source.id, angle, send),),
+                eta,
+                send,
+                "rear_to_front",
+            )
+        )
+        break
+    return candidates
+
+
+def _generate_crash_exploit_candidates(state, available, planned_commitments, policy):
+    if state.num_players < 4:
+        return []
+    candidates = []
+    for target in [p for p in state.planets if p.owner != state.player]:
+        arrivals = state.ledger.arrivals.get(target.id, {})
+        for turn, by_owner in arrivals.items():
+            enemy_forces = [
+                ships
+                for owner, ships in by_owner.items()
+                if owner not in (-1, state.player) and ships >= 6
+            ]
+            if len(enemy_forces) < 2 or turn > 45:
+                continue
+            enemy_forces.sort(reverse=True)
+            if enemy_forces[0] - enemy_forces[1] > 10:
+                continue
+            desired_turn = int(turn) + 1
+            for source in sorted(
+                [p for p in state.my_planets if available.get(p.id, 0) >= PARTIAL_SOURCE_MIN_SHIPS],
+                key=lambda p: dist((p.x, p.y), (target.x, target.y)),
+            )[:4]:
+                part = _aligned_part_for_turn(source, target, desired_turn, available[source.id], state)
+                if part is None:
+                    continue
+                source_id, angle, max_send, eta = part
+                need = state.min_ships_to_own_by(
+                    target.id,
+                    desired_turn,
+                    state.player,
+                    arrival_turn=eta,
+                    planned_commitments=planned_commitments,
+                    upper_bound=max_send,
+                )
+                if need <= 0 or need > max_send:
+                    continue
+                send = min(max_send, need + 1)
+                score = _candidate_score(
+                    state, target, send, desired_turn, "attack", policy=policy
+                ) + 38.0
+                candidates.append(
+                    Candidate(
+                        "crash",
+                        score,
+                        target.id,
+                        ((source_id, angle, send),),
+                        float(desired_turn),
+                        send,
+                        "enemy_crash_cleanup",
+                    )
+                )
+                break
+    return candidates
+
+
+def _apply_candidate(candidate, available, moves, planned_commitments=None, player=None):
     if len(moves) + len(candidate.parts) > MAX_MOVES:
         return False
     for source_id, _, ships in candidate.parts:
         if available.get(source_id, 0) < ships or ships <= 0:
             return False
+    total_ships = 0
     for source_id, angle, ships in candidate.parts:
         moves.append([int(source_id), float(angle), int(ships)])
         available[source_id] -= int(ships)
+        total_ships += int(ships)
+    if planned_commitments is not None and player is not None and total_ships > 0:
+        planned_commitments.setdefault(candidate.target_id, []).append(
+            (int(math.ceil(candidate.eta)), player, total_ships)
+        )
     return True
 
 
 def _selection_threshold(state, candidate):
-    if candidate.kind in ("defend", "evacuate"):
+    if candidate.kind in ("defend", "evacuate", "recapture"):
         return -9999.0
+    if candidate.kind in ("snipe", "crash"):
+        return 8.0
+    if candidate.kind == "stage":
+        return 20.0
     if state.step > ENDGAME_STEP:
         return -8.0
     if state.step < 70 and candidate.kind == "expand":
@@ -1195,10 +1795,256 @@ def _selection_threshold(state, candidate):
     return 10.0
 
 
-def _choose_moves(state):
-    available = state.initial_available()
+def _position_at_relative_turn(state, planet, relative_turn):
+    return predict_planet_position(
+        planet, state.step, state.step + float(relative_turn), state.obs
+    )
+
+
+def _opening_target_pool(state, policy):
+    targets = [p for p in state.planets if p.owner != state.player and p.id not in state.comet_ids]
+    def score(target):
+        my_t, enemy_t = _policy_reaction_times(policy, target.id)
+        value = target.production * 32.0 - target.ships * 0.85
+        value -= _nearest_owned_distance(state, target) * 0.18
+        if state.is_static(target):
+            value += target.production * 10.0 + 12.0
+        else:
+            value -= 10.0
+            if target.production <= 2:
+                value -= 10.0
+        if target.owner != -1:
+            value += target.production * 12.0 + target.ships * 0.25
+        if enemy_t < my_t - 1.0:
+            value -= 55.0
+        elif enemy_t - my_t >= 6.0:
+            value += target.production * 5.0
+        value += policy["indirect_value"].get(target.id, 0.0) * 8.0
+        return value
+
+    targets.sort(key=score, reverse=True)
+    return targets[:OPENING_PLAN_TARGETS]
+
+
+def _opening_launch_option(state, src_planet, ref_ships, ref_prod, ref_time, target, remaining_steps):
+    base_need = int(math.ceil(target.ships + CAPTURE_BUFFER))
+    if target.owner not in (-1, state.player):
+        base_need += target.production * 4
+    if ref_prod <= 0 and ref_ships < base_need:
+        return None
+
+    if ref_ships >= base_need:
+        earliest = ref_time
+    else:
+        earliest = ref_time + math.ceil((base_need - ref_ships) / max(1, ref_prod))
+
+    best = None
+    for extra in range(OPENING_PLAN_WAIT + 1):
+        launch_t = int(math.ceil(earliest + extra))
+        if launch_t >= remaining_steps:
+            break
+        fleet = int(ref_ships + ref_prod * max(0.0, launch_t - ref_time))
+        if fleet < base_need:
+            continue
+        speed = compute_fleet_speed(fleet)
+        source_xy = _position_at_relative_turn(state, src_planet, launch_t)
+        target_xy = _target_position(target.id, state.step, state.step + launch_t, state.obs)
+        if target_xy is None:
+            continue
+        eta = max(1.0, dist(source_xy, target_xy) / speed)
+        for _ in range(5):
+            target_xy = _target_position(
+                target.id, state.step, state.step + launch_t + eta, state.obs
+            )
+            if target_xy is None:
+                break
+            eta = max(1.0, dist(source_xy, target_xy) / speed)
+        else:
+            cap_t = launch_t + eta
+            if cap_t >= remaining_steps:
+                continue
+            if path_crosses_sun(source_xy, target_xy):
+                continue
+            need = int(math.ceil(target.ships + CAPTURE_BUFFER))
+            if target.owner not in (-1, state.player):
+                need += int(math.ceil(target.production * cap_t)) + 2
+            if fleet < need:
+                continue
+            key = (cap_t, -fleet)
+            if best is None or key < best[0]:
+                best = (
+                    key,
+                    {
+                        "launch_t": launch_t,
+                        "send": fleet,
+                        "need": need,
+                        "eta": eta,
+                        "cap_t": cap_t,
+                    },
+                )
+            if extra > 5 and best is not None and cap_t > best[1]["cap_t"] + 1.0:
+                break
+    return None if best is None else best[1]
+
+
+def _opening_evaluate_plan(state, plan, policy):
+    remaining_steps = max(1, state.turns_left())
+    sources = {
+        planet.id: (
+            max(0, int(planet.ships - policy["reserve"].get(planet.id, 0))),
+            int(planet.production),
+            0.0,
+        )
+        for planet in state.my_planets
+    }
+    value = 0.0
+    moves = []
+    used_targets = set()
+    for src_id, target_id in plan:
+        if src_id not in sources or target_id in used_targets or src_id == target_id:
+            return None
+        src_planet = state.planet_by_id.get(src_id)
+        target = state.planet_by_id.get(target_id)
+        if src_planet is None or target is None:
+            return None
+        ref_ships, ref_prod, ref_time = sources[src_id]
+        launch = _opening_launch_option(
+            state, src_planet, ref_ships, ref_prod, ref_time, target, remaining_steps
+        )
+        if launch is None:
+            return None
+        enemy_eta, _, _ = state.enemy_reach(target)
+        if target.owner == -1 and enemy_eta < launch["cap_t"] - 0.5:
+            return None
+        cap_t = launch["cap_t"]
+        turns_profit = max(0.0, remaining_steps - cap_t)
+        target_value = target.production * turns_profit
+        if state.is_static(target):
+            target_value *= 1.22
+        elif state.step < 35 and target.production <= 2:
+            target_value *= 0.72
+        if target.owner not in (-1, state.player):
+            target_value *= 1.55
+        target_value += policy["indirect_value"].get(target.id, 0.0) * turns_profit * 0.10
+        value += target_value - launch["send"] * 0.34 - cap_t * 0.45
+        moves.append(
+            {
+                "src_id": src_id,
+                "target_id": target_id,
+                "launch_t": launch["launch_t"],
+                "send": launch["send"],
+                "cap_t": cap_t,
+            }
+        )
+        sources[src_id] = (0, ref_prod, float(launch["launch_t"]))
+        sources[target_id] = (
+            max(0, int(launch["send"] - launch["need"])),
+            int(target.production),
+            float(cap_t),
+        )
+        used_targets.add(target_id)
+    return {"value": value, "moves": moves, "plan": plan}
+
+
+def _opening_planner_moves(state, policy, deadline):
+    if state.step >= OPENING_PLANNER_LIMIT:
+        return None
+    if state.num_players != 2 or len(state.my_planets) > OPENING_PLAN_MAX_MY_PLANETS:
+        return None
+    for planet in state.my_planets:
+        fall = state.ledger.first_not_owned_turn(
+            planet.id, state.player, OPENING_PLAN_DEFENSE_GATE
+        )
+        if fall is not None:
+            return None
+
+    targets = _opening_target_pool(state, policy)
+    if not targets:
+        return None
+    if len(state.my_planets) == 1:
+        depth = OPENING_PLAN_DEPTH_ONE
+    elif len(state.my_planets) <= 3:
+        depth = OPENING_PLAN_DEPTH_FEW
+    else:
+        depth = OPENING_PLAN_DEPTH_MANY
+
+    stop_at = min(deadline, time.perf_counter() + OPENING_PLANNER_BUDGET)
+    beam = [{"plan": [], "value": 0.0, "moves": []}]
+    best = None
+    initial_sources = {planet.id for planet in state.my_planets}
+
+    for _ in range(depth):
+        if time.perf_counter() >= stop_at:
+            break
+        expanded = []
+        for entry in beam:
+            if time.perf_counter() >= stop_at:
+                break
+            used_targets = {target_id for _, target_id in entry["plan"]}
+            sources = initial_sources | used_targets
+            for src_id in sources:
+                for target in targets:
+                    if target.id in used_targets or target.id == src_id:
+                        continue
+                    plan = entry["plan"] + [(src_id, target.id)]
+                    evaluated = _opening_evaluate_plan(state, plan, policy)
+                    if evaluated is not None:
+                        expanded.append(evaluated)
+        if not expanded:
+            break
+        expanded.sort(key=lambda item: item["value"], reverse=True)
+        beam = expanded[:OPENING_PLAN_BEAM]
+        if best is None or beam[0]["value"] > best["value"]:
+            best = beam[0]
+
+    if best is None or not best["moves"] or best["value"] <= 0:
+        return None
+
+    available = dict(policy["attack_budget"])
+    planned = {}
+    moves = []
+    for commit in best["moves"]:
+        if commit["launch_t"] > 0:
+            continue
+        source = state.planet_by_id.get(commit["src_id"])
+        target = state.planet_by_id.get(commit["target_id"])
+        if source is None or target is None:
+            continue
+        send = min(int(commit["send"]), available.get(source.id, 0))
+        if send <= 0:
+            continue
+        needed = state.min_ships_to_own_at(
+            target.id,
+            commit["cap_t"],
+            planned_commitments=planned,
+            upper_bound=send,
+        )
+        if needed <= 0 or needed > send:
+            continue
+        intercept = _validated_intercept(source, target, send, state)
+        if intercept is None:
+            continue
+        angle, eta = intercept
+        moves.append([int(source.id), float(angle), int(send)])
+        available[source.id] -= send
+        planned.setdefault(target.id, []).append((int(math.ceil(eta)), state.player, send))
+        if len(moves) >= MAX_MOVES:
+            break
+    return moves or None
+
+
+def _choose_moves(state, deadline=None):
+    if deadline is None:
+        deadline = time.perf_counter() + 0.82
+    policy = _build_policy(state)
+    opening_moves = _opening_planner_moves(state, policy, deadline)
+    if opening_moves is not None:
+        return opening_moves[:MAX_MOVES]
+
+    available = dict(policy["attack_budget"])
     moves = []
     claimed_targets = set()
+    planned_commitments = {}
 
     defense_candidates = sorted(
         _generate_defense_candidates(state, available),
@@ -1207,7 +2053,9 @@ def _choose_moves(state):
     )
     protected_targets = set()
     for candidate in defense_candidates:
-        if _apply_candidate(candidate, available, moves):
+        if _apply_candidate(
+            candidate, available, moves, planned_commitments, state.player
+        ):
             claimed_targets.add(candidate.target_id)
             protected_targets.add(candidate.target_id)
         if len(moves) >= MAX_MOVES:
@@ -1219,24 +2067,67 @@ def _choose_moves(state):
         reverse=True,
     )
     for candidate in evacuation_candidates:
-        if _apply_candidate(candidate, available, moves):
+        if _apply_candidate(
+            candidate, available, moves, planned_commitments, state.player
+        ):
+            claimed_targets.add(candidate.target_id)
+        if len(moves) >= MAX_MOVES:
+            return moves[:MAX_MOVES]
+
+    tactical_candidates = sorted(
+        _generate_snipe_candidates(state, available, planned_commitments, policy)
+        + _generate_recapture_candidates(
+            state, available, planned_commitments, policy, protected_targets
+        )
+        + _generate_crash_exploit_candidates(
+            state, available, planned_commitments, policy
+        ),
+        key=lambda c: c.score,
+        reverse=True,
+    )
+    for candidate in tactical_candidates:
+        if candidate.target_id in claimed_targets and candidate.kind not in ("recapture",):
+            continue
+        if candidate.score < _selection_threshold(state, candidate):
+            continue
+        if _apply_candidate(
+            candidate, available, moves, planned_commitments, state.player
+        ):
             claimed_targets.add(candidate.target_id)
         if len(moves) >= MAX_MOVES:
             return moves[:MAX_MOVES]
 
     for _ in range(8):
-        candidates = _generate_capture_candidates(state, available, claimed_targets)
+        candidates = _generate_capture_candidates(
+            state,
+            available,
+            claimed_targets,
+            planned_commitments=planned_commitments,
+            policy=policy,
+        )
         if not candidates:
             break
         candidates.sort(key=lambda c: c.score, reverse=True)
         chosen = candidates[0]
         if chosen.score < _selection_threshold(state, chosen):
             break
-        if _apply_candidate(chosen, available, moves):
+        if _apply_candidate(chosen, available, moves, planned_commitments, state.player):
             claimed_targets.add(chosen.target_id)
         else:
             claimed_targets.add(chosen.target_id)
         if len(moves) >= MAX_MOVES:
+            break
+
+    if len(moves) < MAX_MOVES:
+        staging_candidates = sorted(
+            _generate_staging_candidates(state, available),
+            key=lambda c: c.score,
+            reverse=True,
+        )
+        for candidate in staging_candidates:
+            if candidate.score < _selection_threshold(state, candidate):
+                continue
+            _apply_candidate(candidate, available, moves, planned_commitments, state.player)
             break
 
     return moves[:MAX_MOVES]
@@ -1274,13 +2165,15 @@ def ships_needed_to_capture(target_planet, eta, current_step, obs):
 
 
 def agent(obs, config=None):
-    del config
     global _CURRENT_STATE
+    start = time.perf_counter()
     state = GameState(obs)
     _CURRENT_STATE = state
     if not state.my_planets:
         return []
-    return _choose_moves(state)
+    act_timeout = obs_get(config, "actTimeout", 1.0) if config is not None else 1.0
+    deadline = start + min(0.84, max(0.55, float(act_timeout) * 0.82))
+    return _choose_moves(state, deadline=deadline)
 
 
 if __name__ == "__main__":
