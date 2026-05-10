@@ -16,8 +16,8 @@ The v9 trainer uses fixed-size row and pair batches instead of v8's dynamic cand
 
 ## Dataset Target
 
-- 1000 games with both sides enabled.
-- Roughly 2000 logged game perspectives.
+- 2500 games with both sides enabled.
+- Roughly 5000 logged game perspectives.
 - Use the full baseline and prior-version mix:
   - random
   - nearest
@@ -37,7 +37,7 @@ Expected target:
 - Beat v4/v5 locally on held-out seeds.
 - Improve over v8 SFT-only.
 - Show GRPO improvement without increasing invalid actions, sun losses, or timeout risk.
-- Public score target range: 1250-1450 if the v8 pipeline is stable.
+- Public score target range: 1350-1550 if the v8 pipeline is stable and the 2500-game dataset generalizes.
 
 ## SFT Direction
 
@@ -46,14 +46,18 @@ Expected target:
 - Track per-phase metrics, not only overall top1.
 - Watch for overfitting on selected heuristic actions.
 
-Suggested starting shape:
+Default starting shape:
 
-- SFT epochs: 160-220
-- Row batch size: 4096
-- Pair batch size: 4096
+- SFT epochs: 260
+- Row batch size: 8192
+- Pair batch size: 8192
 - Ensemble size: 8 on TPU v5e-8
-- Dropout: 0.12-0.18
-- Patience: 24-30
+- Learning rate: 0.00048
+- Weight decay: 0.00025
+- Dropout: 0.15
+- BCE weight: 0.62
+- Pair weight: 0.52
+- Patience: 36
 
 ## GRPO Direction
 
@@ -64,15 +68,18 @@ For v9, GRPO should still be conservative.
 - Prefer stable improvement over aggressive reward chasing.
 - Validate against held-out seeds and prior versions before submitting.
 
-Suggested starting shape:
+Default starting shape:
 
-- GRPO epochs: 100-140
-- Row batch size: 4096
-- Pair batch size: 4096
+- GRPO epochs: 180
+- Row batch size: 8192
+- Pair batch size: 8192
 - Members: 8 on TPU v5e-8
-- KL weight: 0.055-0.075
-- Supervised anchor: 0.10-0.16
-- Patience: 20-28
+- Learning rate: 0.00030 by default in the GRPO notebook
+- Reward weight: 0.78
+- KL weight: 0.075
+- Supervised anchor: 0.16
+- Pair weight: 0.52
+- Patience: 36
 
 ## Run Order
 

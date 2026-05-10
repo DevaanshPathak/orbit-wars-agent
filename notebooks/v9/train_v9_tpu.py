@@ -62,17 +62,17 @@ def parse_args():
     parser.add_argument("--tpu-cores", type=int, default=int(os.environ.get("V9_TPU_CORES", "8")))
     parser.add_argument("--members", type=int, default=int(os.environ.get("V9_MEMBERS", "8")))
     parser.add_argument("--epochs", type=int, default=int(os.environ.get("V9_EPOCHS", "0")))
-    parser.add_argument("--row-batch-size", type=int, default=int(os.environ.get("V9_ROW_BATCH_SIZE", "4096")))
-    parser.add_argument("--pair-batch-size", type=int, default=int(os.environ.get("V9_PAIR_BATCH_SIZE", "4096")))
-    parser.add_argument("--lr", type=float, default=float(os.environ.get("V9_LR", "0.00055")))
-    parser.add_argument("--weight-decay", type=float, default=float(os.environ.get("V9_WEIGHT_DECAY", "0.00022")))
-    parser.add_argument("--dropout", type=float, default=float(os.environ.get("V9_DROPOUT", "0.16")))
-    parser.add_argument("--bce-weight", type=float, default=float(os.environ.get("V9_BCE_WEIGHT", "0.70")))
-    parser.add_argument("--pair-weight", type=float, default=float(os.environ.get("V9_PAIR_WEIGHT", "0.42")))
-    parser.add_argument("--reward-weight", type=float, default=float(os.environ.get("V9_REWARD_WEIGHT", "0.65")))
-    parser.add_argument("--kl-weight", type=float, default=float(os.environ.get("V9_KL_WEIGHT", "0.060")))
-    parser.add_argument("--anchor-weight", type=float, default=float(os.environ.get("V9_ANCHOR_WEIGHT", "0.12")))
-    parser.add_argument("--patience", type=int, default=int(os.environ.get("V9_PATIENCE", "30")))
+    parser.add_argument("--row-batch-size", type=int, default=int(os.environ.get("V9_ROW_BATCH_SIZE", "8192")))
+    parser.add_argument("--pair-batch-size", type=int, default=int(os.environ.get("V9_PAIR_BATCH_SIZE", "8192")))
+    parser.add_argument("--lr", type=float, default=float(os.environ.get("V9_LR", "0.00048")))
+    parser.add_argument("--weight-decay", type=float, default=float(os.environ.get("V9_WEIGHT_DECAY", "0.00025")))
+    parser.add_argument("--dropout", type=float, default=float(os.environ.get("V9_DROPOUT", "0.15")))
+    parser.add_argument("--bce-weight", type=float, default=float(os.environ.get("V9_BCE_WEIGHT", "0.62")))
+    parser.add_argument("--pair-weight", type=float, default=float(os.environ.get("V9_PAIR_WEIGHT", "0.52")))
+    parser.add_argument("--reward-weight", type=float, default=float(os.environ.get("V9_REWARD_WEIGHT", "0.78")))
+    parser.add_argument("--kl-weight", type=float, default=float(os.environ.get("V9_KL_WEIGHT", "0.075")))
+    parser.add_argument("--anchor-weight", type=float, default=float(os.environ.get("V9_ANCHOR_WEIGHT", "0.16")))
+    parser.add_argument("--patience", type=int, default=int(os.environ.get("V9_PATIENCE", "36")))
     parser.add_argument("--checkpoint-every", type=int, default=int(os.environ.get("V9_CHECKPOINT_EVERY", "30")))
     parser.add_argument("--eval-every", type=int, default=int(os.environ.get("V9_EVAL_EVERY", "1")))
     parser.add_argument("--seed", type=int, default=int(os.environ.get("V9_SEED", "1909")))
@@ -776,7 +776,7 @@ def aggregate_artifact(args):
 
 def run_training(args):
     args = resolve_local_inputs(args)
-    default_epochs = 220 if args.mode == "sft" else 140
+    default_epochs = 260 if args.mode == "sft" else 180
     if args.epochs <= 0:
         args.epochs = default_epochs
     export_dir = Path(args.export_dir)

@@ -1,6 +1,6 @@
-# Orbit Wars v6 Heuristic Agent
+# Orbit Wars Agent
 
-This repository contains a single-file Orbit Wars Kaggle agent in `main.py`, plus v5/v6 notebooks for offline analysis and training.
+This repository contains a single-file Orbit Wars Kaggle agent in `main.py`, plus training notebooks and data-generation tools for the heuristic and model-assisted versions.
 
 ## Run locally
 
@@ -29,7 +29,7 @@ python test_local.py --games 50 --compare-git-ref 8f5b855
 The generator runs local games, logs candidate features at decision time, adds turn-delta credit and counterfactual labels, writes one folder for the whole run under gitignored `data/<run_start_timestamp>/`, and uploads that run folder to Hugging Face under `devaanshpa/orbit-wars-agent/data/<run_start_timestamp>`.
 
 ```bash
-python generate_training_data.py --games 1000 --workers 16 --max-candidates-per-turn 48
+python generate_training_data.py --games 2500 --both-sides --workers 16 --max-candidates-per-turn 64
 ```
 
 Each game is identified inside `candidates_v7.csv` by `game_id`; games do not create separate timestamped folders. v7 defaults to both player sides and the full local baseline mix (`random nearest starter greedy rusher`). Add `self` to `--opponents` only for slower self-play runs.
@@ -37,7 +37,7 @@ Each game is identified inside `candidates_v7.csv` by `game_id`; games do not cr
 For more visible progress and better CPU use on a multi-core machine:
 
 ```bash
-python generate_training_data.py --games 1500 --workers 16 --max-candidates-per-turn 54
+python generate_training_data.py --games 2500 --both-sides --workers 16 --max-candidates-per-turn 64 --progress-every 5
 ```
 
 For a local smoke test without upload:
@@ -125,3 +125,5 @@ v9 is a TPU v5e-8 training workbench. It keeps the same compact JSON model forma
 - GRPO notebook: [notebooks/v9/grpo_tpu_training_policy.ipynb](<notebooks/v9/grpo_tpu_training_policy.ipynb>)
 
 Both notebooks are self-contained for Kaggle: they ask for `HF_TOKEN`, execute the embedded trainer in memory, use `torch_xla` on TPU, upload checkpoints every 30 epochs, and save final artifacts to Hugging Face under `v9/sft` and `v9/grpo`. They do not need a companion `.py` file in the Kaggle notebook session.
+
+The current v9 defaults target a larger 2500-game both-sides dataset: 8 TPU members, 260 SFT epochs, 180 GRPO epochs, 8192-row and 8192-pair batches, and conservative KL anchoring for GRPO.

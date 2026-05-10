@@ -7,6 +7,7 @@
 - Added v9 SFT ensemble training across TPU cores with checkpoint uploads under `devaanshpa/orbit-wars-agent/v9/sft/checkpoints`.
 - Added v9 GRPO-style reward tuning across TPU cores with checkpoint uploads under `devaanshpa/orbit-wars-agent/v9/grpo/checkpoints`.
 - Added v9 artifact rules and notes for final JSON exports under `v9/sft` and `v9/grpo`.
+- Raised v9 defaults for the next 2500-game both-sides dataset: 8 TPU members, 260 SFT epochs, 180 GRPO epochs, 8192-row and 8192-pair batches, and stronger pair/reward weighting.
 
 ## v8 - Constrained SFT + GRPO Policy Workbench
 
