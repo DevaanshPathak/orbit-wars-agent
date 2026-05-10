@@ -8,7 +8,8 @@
 - Added v8 notebook notes and streaming notebook launchers so SFT and GRPO runs ask for `HF_TOKEN`, show logs, save graphs, and avoid GitHub-tracked model outputs.
 - Updated the GRPO path to download the SFT artifact from Hugging Face by default using `HF_TOKEN`, with local SFT JSON only as an explicit override.
 - Updated the SFT path to download the newest Hugging Face `data/*/candidates_v7.csv` by default using `HF_TOKEN`, with local CSV only as an explicit override.
-- Set explicit v8 notebook training defaults for 100 both-sides datasets on Kaggle 2*T4, including SFT epochs/ensemble/batch settings and GRPO KL/anchor/batch settings.
+- Set explicit v8 notebook training defaults for 1000-game both-sides datasets on Kaggle 2*T4, including SFT epochs/ensemble/batch settings and GRPO KL/anchor/batch settings.
+- Made the self-contained v8 notebooks log every epoch and upload compact JSON checkpoints to Hugging Face every 30 epochs by default.
 
 ## v7 - Counterfactual Ensemble Ranker
 

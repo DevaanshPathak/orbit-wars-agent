@@ -66,6 +66,7 @@ def parse_args():
     parser.add_argument("--rank-weight", type=float, default=float(os.environ.get("V8_SFT_RANK_WEIGHT", "0.42")))
     parser.add_argument("--ensemble-size", type=int, default=int(os.environ.get("V8_SFT_ENSEMBLE_SIZE", "3")))
     parser.add_argument("--patience", type=int, default=int(os.environ.get("V8_SFT_PATIENCE", "28")))
+    parser.add_argument("--checkpoint-every", type=int, default=int(os.environ.get("V8_SFT_CHECKPOINT_EVERY", "30")))
     parser.add_argument("--seed", type=int, default=811)
     parser.add_argument("--upload", action="store_true")
     parser.add_argument("--hf-repo-id", default=HF_REPO_ID)
@@ -332,9 +333,81 @@ def make_model_class(torch, nn):
     return CandidatePolicy
 
 
+def layers_from_model(model, nn):
+    linear_layers = [module for module in model.net if isinstance(module, nn.Linear)]
+    layers = []
+    for index, layer in enumerate(linear_layers):
+        layers.append(
+            {
+                "weights": layer.weight.detach().cpu().tolist(),
+                "bias": layer.bias.detach().cpu().tolist(),
+                "activation": "relu" if index < len(linear_layers) - 1 else "linear",
+            }
+        )
+    return layers
+
+
+def maybe_upload_file(args, path, path_in_repo, commit_message):
+    if not args.upload:
+        return
+    load_dotenv()
+    token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")
+    if not token:
+        raise RuntimeError("HF_TOKEN is required for checkpoint upload.")
+    try:
+        from huggingface_hub import HfApi
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("Install huggingface_hub to upload checkpoints: pip install huggingface_hub") from exc
+    api = HfApi(token=token)
+    api.create_repo(repo_id=args.hf_repo_id, repo_type=args.hf_repo_type, exist_ok=True)
+    api.upload_file(
+        path_or_fileobj=str(path),
+        path_in_repo=path_in_repo,
+        repo_id=args.hf_repo_id,
+        repo_type=args.hf_repo_type,
+        commit_message=commit_message,
+    )
+    print(f"Uploaded checkpoint to https://huggingface.co/{args.hf_repo_id}/blob/main/{path_in_repo}", flush=True)
+
+
+def save_sft_checkpoint(args, model, nn, member_seed, epoch, item, history, feature_names, means, scales):
+    checkpoint_dir = Path(args.export_dir) / "checkpoints"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": "v8_sft_checkpoint",
+        "created_at": int(time.time()),
+        "seed": member_seed,
+        "epoch": epoch,
+        "latest_metrics": item,
+        "history": history,
+        "member": {
+            "version": "v8_sft",
+            "model_type": "mlp_relu_candidate_ranker",
+            "features": feature_names,
+            "mean": dict(zip(feature_names, means)),
+            "scale": dict(zip(feature_names, scales)),
+            "layers": layers_from_model(model, nn),
+            "activation": "relu",
+            "score_scale": 210.0,
+        },
+    }
+    path = checkpoint_dir / f"sft_seed_{member_seed}_epoch_{epoch:03d}.json"
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    print(f"Saved v8 SFT checkpoint: {path}", flush=True)
+    maybe_upload_file(
+        args,
+        path,
+        f"{HF_REMOTE_PREFIX}/checkpoints/{path.name}",
+        f"Upload v8 SFT checkpoint seed {member_seed} epoch {epoch}",
+    )
+
+
 def train_member(torch, nn, functional, args, member_seed, context):
     (
         rows,
+        feature_names,
+        means,
+        scales,
         feature_count,
         all_x,
         labels,
@@ -444,7 +517,7 @@ def train_member(torch, nn, functional, args, member_seed, context):
             total_loss += float(batch_loss.detach().cpu())
             batches += 1
         scheduler.step()
-        if epoch == 1 or epoch % 5 == 0 or epoch == args.epochs:
+        if epoch >= 1:
             valid_ce, valid_bce, valid_pair, valid_objective, valid_preds = eval_groups(valid_groups, valid_pairs)
             train_metrics = grouped_metrics(
                 rows,
@@ -478,6 +551,8 @@ def train_member(torch, nn, functional, args, member_seed, context):
                 f"lr={item['lr']:.6f}",
                 flush=True,
             )
+            if args.checkpoint_every > 0 and epoch % args.checkpoint_every == 0:
+                save_sft_checkpoint(args, model, nn, member_seed, epoch, item, history, feature_names, means, scales)
             if valid_objective + 1e-5 < best_objective:
                 best_objective = valid_objective
                 best_state = {name: tensor.detach().cpu().clone() for name, tensor in model.state_dict().items()}
@@ -491,17 +566,7 @@ def train_member(torch, nn, functional, args, member_seed, context):
     if best_state is not None:
         model.load_state_dict(best_state)
     model.eval()
-    linear_layers = [module for module in model.net if isinstance(module, nn.Linear)]
-    layers = []
-    for index, layer in enumerate(linear_layers):
-        layers.append(
-            {
-                "weights": layer.weight.detach().cpu().tolist(),
-                "bias": layer.bias.detach().cpu().tolist(),
-                "activation": "relu" if index < len(linear_layers) - 1 else "linear",
-            }
-        )
-    return model, layers, history, best_objective
+    return model, layers_from_model(model, nn), history, best_objective
 
 
 def train(args):
@@ -549,6 +614,7 @@ def train(args):
                 "counterfactual_rate": sum(1 for value in counterfactual if value) / len(counterfactual),
                 "device": str(device),
                 "ensemble_size": args.ensemble_size,
+                "checkpoint_every": args.checkpoint_every,
             },
             indent=2,
         ),
@@ -557,6 +623,9 @@ def train(args):
 
     context = (
         rows,
+        feature_names,
+        means,
+        scales,
         len(feature_names),
         all_x,
         labels,

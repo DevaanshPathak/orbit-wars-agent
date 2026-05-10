@@ -82,6 +82,7 @@ def parse_args():
     parser.add_argument("--entropy-weight", type=float, default=float(os.environ.get("V8_GRPO_ENTROPY_WEIGHT", "0.012")))
     parser.add_argument("--supervised-anchor", type=float, default=float(os.environ.get("V8_GRPO_SUPERVISED_ANCHOR", "0.14")))
     parser.add_argument("--patience", type=int, default=int(os.environ.get("V8_GRPO_PATIENCE", "24")))
+    parser.add_argument("--checkpoint-every", type=int, default=int(os.environ.get("V8_GRPO_CHECKPOINT_EVERY", "30")))
     parser.add_argument("--seed", type=int, default=1701)
     parser.add_argument("--upload", action="store_true")
     parser.add_argument("--hf-repo-id", default=HF_REPO_ID)
@@ -320,6 +321,78 @@ def load_member_into_model(torch, model, member):
         layer_module.bias.data = torch.tensor(layer_data["bias"], dtype=layer_module.bias.dtype, device=layer_module.bias.device)
 
 
+def layers_from_model(torch, nn, model):
+    linear_layers = [module for module in model.net if isinstance(module, nn.Linear)]
+    layers = []
+    for index, layer in enumerate(linear_layers):
+        layers.append(
+            {
+                "weights": layer.weight.detach().cpu().tolist(),
+                "bias": layer.bias.detach().cpu().tolist(),
+                "activation": "relu" if index < len(linear_layers) - 1 else "linear",
+            }
+        )
+    return layers
+
+
+def maybe_upload_file(args, path, path_in_repo, commit_message):
+    if not args.upload:
+        return
+    load_dotenv()
+    token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")
+    if not token:
+        raise RuntimeError("HF_TOKEN is required for checkpoint upload.")
+    try:
+        from huggingface_hub import HfApi
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("Install huggingface_hub to upload checkpoints: pip install huggingface_hub") from exc
+    api = HfApi(token=token)
+    api.create_repo(repo_id=args.hf_repo_id, repo_type=args.hf_repo_type, exist_ok=True)
+    api.upload_file(
+        path_or_fileobj=str(path),
+        path_in_repo=path_in_repo,
+        repo_id=args.hf_repo_id,
+        repo_type=args.hf_repo_type,
+        commit_message=commit_message,
+    )
+    print(f"Uploaded checkpoint to https://huggingface.co/{args.hf_repo_id}/blob/main/{path_in_repo}", flush=True)
+
+
+def save_grpo_checkpoint(args, torch, nn, model, epoch, item, history, feature_names, means, scales, sft_path, blend):
+    checkpoint_dir = Path(args.export_dir) / "checkpoints"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    member = {
+        "version": "v8_grpo",
+        "model_type": "mlp_relu_candidate_ranker",
+        "features": feature_names,
+        "mean": means,
+        "scale": scales,
+        "layers": layers_from_model(torch, nn, model),
+        "activation": "relu",
+        "score_scale": 230.0,
+    }
+    payload = {
+        "version": "v8_grpo_checkpoint",
+        "created_at": int(time.time()),
+        "epoch": epoch,
+        "latest_metrics": item,
+        "history": history,
+        "source_sft_artifact": str(sft_path),
+        "model_type": "ensemble_mlp_relu_candidate_ranker",
+        "members": [member],
+        "blend": blend,
+    }
+    path = checkpoint_dir / f"grpo_epoch_{epoch:03d}.json"
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    print(f"Saved v8 GRPO checkpoint: {path}", flush=True)
+    maybe_upload_file(
+        args,
+        path,
+        f"{GRPO_REMOTE_PREFIX}/checkpoints/{path.name}",
+        f"Upload v8 GRPO checkpoint epoch {epoch}",
+    )
+
+
 def sigmoid_prob(value):
     value = max(-50.0, min(50.0, value))
     return 1.0 / (1.0 + math.exp(-value))
@@ -391,6 +464,7 @@ def train(args):
                 "validation_groups": len(valid_groups),
                 "samples_per_group": args.samples_per_group,
                 "device": str(device),
+                "checkpoint_every": args.checkpoint_every,
                 "remote_upload_path": GRPO_REMOTE_PREFIX,
             },
             indent=2,
@@ -402,6 +476,7 @@ def train(args):
     best_objective = float("inf")
     stale = 0
     history = []
+    checkpoint_blend = max(0.18, min(0.58, float(sft_artifact.get("blend", 0.32)) + 0.08))
     for epoch in range(1, args.epochs + 1):
         model.train()
         groups = train_groups[:]
@@ -456,7 +531,7 @@ def train(args):
             batches += 1
         scheduler.step()
 
-        if epoch == 1 or epoch % 5 == 0 or epoch == args.epochs:
+        if epoch >= 1:
             model.eval()
             with torch.no_grad():
                 logits_all = model(x_all).detach().cpu().tolist()
@@ -481,6 +556,21 @@ def train(args):
                 f"valid_top1={item['valid_turn_top1']:.4f} rank={item['valid_rank_fraction']:.4f}",
                 flush=True,
             )
+            if args.checkpoint_every > 0 and epoch % args.checkpoint_every == 0:
+                save_grpo_checkpoint(
+                    args,
+                    torch,
+                    nn,
+                    model,
+                    epoch,
+                    item,
+                    history,
+                    feature_names,
+                    means,
+                    scales,
+                    sft_path,
+                    checkpoint_blend,
+                )
             if objective + 1e-5 < best_objective:
                 best_objective = objective
                 best_state = {name: tensor.detach().cpu().clone() for name, tensor in model.state_dict().items()}
@@ -500,25 +590,15 @@ def train(args):
     train_metrics = grouped_metrics(rows, all_probs, positive_mask, train_indices)
     valid_metrics = grouped_metrics(rows, all_probs, positive_mask, valid_indices)
 
-    linear_layers = [module for module in model.net if isinstance(module, nn.Linear)]
-    layers = []
-    for index, layer in enumerate(linear_layers):
-        layers.append(
-            {
-                "weights": layer.weight.detach().cpu().tolist(),
-                "bias": layer.bias.detach().cpu().tolist(),
-                "activation": "relu" if index < len(linear_layers) - 1 else "linear",
-            }
-        )
     score_scale = 230.0
-    blend = max(0.18, min(0.58, float(sft_artifact.get("blend", 0.32)) + 0.08))
+    blend = checkpoint_blend
     member = {
         "version": "v8_grpo",
         "model_type": "mlp_relu_candidate_ranker",
         "features": feature_names,
         "mean": means,
         "scale": scales,
-        "layers": layers,
+        "layers": layers_from_model(torch, nn, model),
         "activation": "relu",
         "score_scale": score_scale,
     }
