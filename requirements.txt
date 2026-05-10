@@ -1,4 +1,4 @@
-# Local Orbit Wars development, data generation, and v6 training.
+# Local Orbit Wars development, data generation, and v6-v9 training.
 # Kaggle submissions remain single-file and do not import these training deps.
 
 kaggle-environments>=1.28.0
@@ -6,6 +6,9 @@ kaggle>=2.0.1
 huggingface-hub>=0.23.0
 matplotlib>=3.8.0
 
-# PyTorch is required for notebooks/v6, notebooks/v7, and notebooks/v8 training.
+# PyTorch is required for notebooks/v6, notebooks/v7, notebooks/v8, and notebooks/v9 training.
 # If this fails on Python 3.14, use Python 3.11/3.12 or Kaggle/Colab.
 torch>=2.3.0
+
+# v8/v9 TPU notebooks require torch_xla from a TPU runtime such as Kaggle TPU v5e-8.
+# Install the torch_xla build that matches the runtime PyTorch version; do not pin it here.

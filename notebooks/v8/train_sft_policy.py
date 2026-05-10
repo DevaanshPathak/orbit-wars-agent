@@ -11,7 +11,7 @@ from pathlib import Path
 
 HF_REPO_ID = "devaanshpa/orbit-wars-agent"
 HF_REPO_TYPE = "model"
-HF_REMOTE_PREFIX = "v7/sft"
+HF_REMOTE_PREFIX = "v8/sft"
 
 METADATA_COLS = {
     "label",
@@ -67,6 +67,12 @@ def parse_args():
     parser.add_argument("--ensemble-size", type=int, default=int(os.environ.get("V8_SFT_ENSEMBLE_SIZE", "3")))
     parser.add_argument("--patience", type=int, default=int(os.environ.get("V8_SFT_PATIENCE", "28")))
     parser.add_argument("--checkpoint-every", type=int, default=int(os.environ.get("V8_SFT_CHECKPOINT_EVERY", "30")))
+    parser.add_argument(
+        "--device",
+        choices=("tpu", "cuda", "cpu", "auto"),
+        default=os.environ.get("V8_DEVICE", "tpu"),
+        help="Training device. Defaults to TPU for Kaggle TPU v5e-8 runs.",
+    )
     parser.add_argument("--seed", type=int, default=811)
     parser.add_argument("--upload", action="store_true")
     parser.add_argument("--hf-repo-id", default=HF_REPO_ID)
@@ -333,6 +339,30 @@ def make_model_class(torch, nn):
     return CandidatePolicy
 
 
+def choose_device(torch, args):
+    requested = args.device
+    if requested == "auto":
+        requested = "tpu" if os.environ.get("TPU_NAME") or os.environ.get("PJRT_DEVICE") == "TPU" else "cuda"
+    if requested == "tpu":
+        os.environ.setdefault("PJRT_DEVICE", "TPU")
+        try:
+            import torch_xla.core.xla_model as xm
+        except ModuleNotFoundError as exc:
+            raise RuntimeError("torch_xla is required for V8_DEVICE=tpu. Use a Kaggle TPU v5e-8 runtime.") from exc
+        return xm.xla_device(), xm
+    if requested == "cuda" and torch.cuda.is_available():
+        return torch.device("cuda"), None
+    return torch.device("cpu"), None
+
+
+def optimizer_step(optimizer, xm):
+    if xm is None:
+        optimizer.step()
+    else:
+        xm.optimizer_step(optimizer, barrier=False)
+        xm.mark_step()
+
+
 def layers_from_model(model, nn):
     linear_layers = [module for module in model.net if isinstance(module, nn.Linear)]
     layers = []
@@ -421,6 +451,7 @@ def train_member(torch, nn, functional, args, member_seed, context):
         train_pairs,
         valid_pairs,
         device,
+        xm,
     ) = context
     torch.manual_seed(member_seed)
     random.seed(member_seed)
@@ -513,7 +544,7 @@ def train_member(torch, nn, functional, args, member_seed, context):
                 batch_loss = batch_loss + args.pair_weight * pair_loss
             batch_loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
+            optimizer_step(optimizer, xm)
             total_loss += float(batch_loss.detach().cpu())
             batches += 1
         scheduler.step()
@@ -594,7 +625,7 @@ def train(args):
     train_pairs = build_hard_pairs(rows, labels, selected, counterfactual, train_groups, train_local)
     valid_pairs = build_hard_pairs(rows, labels, selected, counterfactual, valid_groups, valid_local)
     positive_mask = [selected[i] or counterfactual[i] or labels[i] >= 0.55 for i in range(len(rows))]
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device, xm = choose_device(torch, args)
 
     print(
         json.dumps(
@@ -639,6 +670,7 @@ def train(args):
         train_pairs,
         valid_pairs,
         device,
+        xm,
     )
     members = []
     histories = []

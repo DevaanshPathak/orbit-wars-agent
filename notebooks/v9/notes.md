@@ -1,6 +1,18 @@
 # v9 Notes
 
-v9 is the first serious SFT + GRPO scale-up after the v8 smoke pipeline.
+v9 is the first serious SFT + GRPO scale-up after the v8 smoke pipeline. It is designed for Kaggle TPU v5e-8.
+
+## Files
+
+- `sft_tpu_training_policy.ipynb` is self-contained for Kaggle TPU. It writes the embedded v9 trainer at runtime, asks for `HF_TOKEN`, spawns SFT ensemble members across 8 XLA processes, uploads checkpoints every 30 epochs, and uploads final artifacts to `devaanshpa/orbit-wars-agent/v9/sft`.
+- `grpo_tpu_training_policy.ipynb` is self-contained for Kaggle TPU. It downloads the v9 SFT artifact, spawns GRPO-style reward-tuning members across 8 XLA processes, uploads checkpoints every 30 epochs, and uploads final artifacts to `devaanshpa/orbit-wars-agent/v9/grpo`.
+- `train_v9_tpu.py` is the optional local/CLI copy of the same trainer embedded in both notebooks.
+
+## TPU Design
+
+v9 uses member parallelism rather than synchronized distributed gradient descent. Each TPU core trains one independent compact MLP member from a different seed, then the main process aggregates the member JSON files into the same ensemble format `main.py` already supports. This keeps TPU use simple and avoids fragile all-reduce behavior for the custom candidate-ranking losses.
+
+The v9 trainer uses fixed-size row and pair batches instead of v8's dynamic candidate-group training loop. This is intentional because dynamic group shapes can cause repeated XLA recompilation on TPU.
 
 ## Dataset Target
 
@@ -37,8 +49,9 @@ Expected target:
 Suggested starting shape:
 
 - SFT epochs: 160-220
-- Batch groups: 192-256
-- Ensemble size: 3-4
+- Row batch size: 4096
+- Pair batch size: 4096
+- Ensemble size: 8 on TPU v5e-8
 - Dropout: 0.12-0.18
 - Patience: 24-30
 
@@ -54,11 +67,20 @@ For v9, GRPO should still be conservative.
 Suggested starting shape:
 
 - GRPO epochs: 100-140
-- Batch groups: 128-192
-- Samples per group: 8-12
+- Row batch size: 4096
+- Pair batch size: 4096
+- Members: 8 on TPU v5e-8
 - KL weight: 0.055-0.075
 - Supervised anchor: 0.10-0.16
 - Patience: 20-28
+
+## Run Order
+
+1. Run `sft_tpu_training_policy.ipynb` on Kaggle TPU v5e-8.
+2. Confirm `v9/sft/model_weights_v9_sft.json` exists in Hugging Face.
+3. Run `grpo_tpu_training_policy.ipynb` on Kaggle TPU v5e-8.
+4. Fetch `v9/grpo/model_weights_v9_grpo.json` into local gitignored `models/`.
+5. Build and test a Kaggle submission with `build_submission.py`.
 
 ## Go / No-Go
 

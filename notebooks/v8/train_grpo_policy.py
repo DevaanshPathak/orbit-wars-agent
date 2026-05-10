@@ -11,8 +11,8 @@ from pathlib import Path
 
 HF_REPO_ID = "devaanshpa/orbit-wars-agent"
 HF_REPO_TYPE = "model"
-SFT_REMOTE_PREFIX = "v7/sft"
-GRPO_REMOTE_PREFIX = "v7/grpo"
+SFT_REMOTE_PREFIX = "v8/sft"
+GRPO_REMOTE_PREFIX = "v8/grpo"
 
 METADATA_COLS = {
     "label",
@@ -83,6 +83,12 @@ def parse_args():
     parser.add_argument("--supervised-anchor", type=float, default=float(os.environ.get("V8_GRPO_SUPERVISED_ANCHOR", "0.14")))
     parser.add_argument("--patience", type=int, default=int(os.environ.get("V8_GRPO_PATIENCE", "24")))
     parser.add_argument("--checkpoint-every", type=int, default=int(os.environ.get("V8_GRPO_CHECKPOINT_EVERY", "30")))
+    parser.add_argument(
+        "--device",
+        choices=("tpu", "cuda", "cpu", "auto"),
+        default=os.environ.get("V8_DEVICE", "tpu"),
+        help="Training device. Defaults to TPU for Kaggle TPU v5e-8 runs.",
+    )
     parser.add_argument("--seed", type=int, default=1701)
     parser.add_argument("--upload", action="store_true")
     parser.add_argument("--hf-repo-id", default=HF_REPO_ID)
@@ -321,6 +327,30 @@ def load_member_into_model(torch, model, member):
         layer_module.bias.data = torch.tensor(layer_data["bias"], dtype=layer_module.bias.dtype, device=layer_module.bias.device)
 
 
+def choose_device(torch, args):
+    requested = args.device
+    if requested == "auto":
+        requested = "tpu" if os.environ.get("TPU_NAME") or os.environ.get("PJRT_DEVICE") == "TPU" else "cuda"
+    if requested == "tpu":
+        os.environ.setdefault("PJRT_DEVICE", "TPU")
+        try:
+            import torch_xla.core.xla_model as xm
+        except ModuleNotFoundError as exc:
+            raise RuntimeError("torch_xla is required for V8_DEVICE=tpu. Use a Kaggle TPU v5e-8 runtime.") from exc
+        return xm.xla_device(), xm
+    if requested == "cuda" and torch.cuda.is_available():
+        return torch.device("cuda"), None
+    return torch.device("cpu"), None
+
+
+def optimizer_step(optimizer, xm):
+    if xm is None:
+        optimizer.step()
+    else:
+        xm.optimizer_step(optimizer, barrier=False)
+        xm.mark_step()
+
+
 def layers_from_model(torch, nn, model):
     linear_layers = [module for module in model.net if isinstance(module, nn.Linear)]
     layers = []
@@ -433,7 +463,7 @@ def train(args):
         for i, row in enumerate(rows)
     ]
     positive_mask = [selected[i] or counterfactual[i] or labels[i] >= 0.55 for i in range(len(rows))]
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device, xm = choose_device(torch, args)
     CandidatePolicy = make_model_class(torch, nn)
     base_members = sft_artifact.get("members", []) or [sft_artifact]
     model = CandidatePolicy(len(feature_names)).to(device)
@@ -523,7 +553,7 @@ def train(args):
             loss_acc = loss_acc / max(1, len(batch_groups))
             loss_acc.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 0.8)
-            optimizer.step()
+            optimizer_step(optimizer, xm)
             total_loss += float(loss_acc.detach().cpu())
             total_policy += policy_acc / max(1, len(batch_groups))
             total_kl += kl_acc / max(1, len(batch_groups))

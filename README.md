@@ -107,3 +107,21 @@ python build_submission.py --weights notebooks/v7/exports/model_weights_v7.json 
 ```
 
 The v7 model artifact is an ensemble of compact JSON MLP rankers; `main.py` can average ensemble members at runtime.
+
+## What v8 does
+
+v8 is the constrained SFT + GRPO workbench. It keeps the heuristic candidate generator as the legal action space, then trains TPU-first notebooks to rank those candidates:
+
+- SFT notebook: [notebooks/v8/sft_training_policy.ipynb](<notebooks/v8/sft_training_policy.ipynb>)
+- GRPO notebook: [notebooks/v8/grpo_training_policy.ipynb](<notebooks/v8/grpo_training_policy.ipynb>)
+
+Both notebooks ask for `HF_TOKEN`, use `torch_xla` on Kaggle TPU v5e-8, print every epoch, upload checkpoints every 30 epochs, and save final artifacts to Hugging Face under `v8/sft` and `v8/grpo`.
+
+## What v9 does
+
+v9 is a TPU v5e-8 training workbench. It keeps the same compact JSON model format, but trains SFT and GRPO-style reward-tuned ensemble members across TPU cores:
+
+- SFT notebook: [notebooks/v9/sft_tpu_training_policy.ipynb](<notebooks/v9/sft_tpu_training_policy.ipynb>)
+- GRPO notebook: [notebooks/v9/grpo_tpu_training_policy.ipynb](<notebooks/v9/grpo_tpu_training_policy.ipynb>)
+
+Both notebooks are self-contained for Kaggle: they ask for `HF_TOKEN`, write the embedded trainer at runtime, use `torch_xla` on TPU, upload checkpoints every 30 epochs, and save final artifacts to Hugging Face under `v9/sft` and `v9/grpo`.

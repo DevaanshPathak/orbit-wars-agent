@@ -1,5 +1,13 @@
 # Changelog
 
+## v9 - TPU v5e-8 Candidate Policy Workbench
+
+- Added `notebooks/v9/train_v9_tpu.py`, a TPU-first SFT/GRPO trainer that uses fixed-shape row and pair batches to avoid dynamic XLA recompilation.
+- Added self-contained v9 Kaggle notebooks that write the embedded trainer at runtime, ask for `HF_TOKEN`, target TPU v5e-8 through `torch_xla`, and stream epoch logs.
+- Added v9 SFT ensemble training across TPU cores with checkpoint uploads under `devaanshpa/orbit-wars-agent/v9/sft/checkpoints`.
+- Added v9 GRPO-style reward tuning across TPU cores with checkpoint uploads under `devaanshpa/orbit-wars-agent/v9/grpo/checkpoints`.
+- Added v9 artifact rules and notes for final JSON exports under `v9/sft` and `v9/grpo`.
+
 ## v8 - Constrained SFT + GRPO Policy Workbench
 
 - Added `notebooks/v8` with SFT and GRPO training entrypoints that keep Orbit Wars legality inside the existing candidate generator.
@@ -8,7 +16,9 @@
 - Added v8 notebook notes and streaming notebook launchers so SFT and GRPO runs ask for `HF_TOKEN`, show logs, save graphs, and avoid GitHub-tracked model outputs.
 - Updated the GRPO path to download the SFT artifact from Hugging Face by default using `HF_TOKEN`, with local SFT JSON only as an explicit override.
 - Updated the SFT path to download the newest Hugging Face `data/*/candidates_v7.csv` by default using `HF_TOKEN`, with local CSV only as an explicit override.
-- Set explicit v8 notebook training defaults for 1000-game both-sides datasets on Kaggle 2*T4, including SFT epochs/ensemble/batch settings and GRPO KL/anchor/batch settings.
+- Moved v8 Hugging Face uploads from the legacy `v7/sft` and `v7/grpo` experiment paths to `v8/sft` and `v8/grpo`.
+- Switched the v8 SFT and GRPO notebooks to TPU-first execution with `PJRT_DEVICE=TPU`, `V8_DEVICE=tpu`, `torch_xla` dependency checks, and XLA optimizer steps.
+- Set explicit v8 notebook training defaults for 1000-game both-sides datasets on Kaggle TPU v5e-8, including SFT epochs/ensemble/batch settings and GRPO KL/anchor/batch settings.
 - Made the self-contained v8 notebooks log every epoch and upload compact JSON checkpoints to Hugging Face every 30 epochs by default.
 
 ## v7 - Counterfactual Ensemble Ranker

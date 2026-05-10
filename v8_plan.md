@@ -40,10 +40,8 @@ The notebooks must ask for `HF_TOKEN` in the first auth/setup cell using a hidde
 
 Per user request, trained artifacts from the v8 notebooks should upload to the Hugging Face repo `devaanshpa/orbit-wars-agent` under:
 
-- `v7/sft/`
-- `v7/grpo/`
-
-This remote path is intentionally named as requested, even though the local plan and notebooks are v8.
+- `v8/sft/`
+- `v8/grpo/`
 
 ## Data Plan
 
@@ -113,7 +111,7 @@ Validation metrics:
 - Per-phase metrics: opening, expansion, midgame, endgame.
 - Per-kind metrics: expand, attack, defend, comet, stage, snipe, crash, evacuate.
 
-Artifacts uploaded to `v7/sft/`:
+Artifacts uploaded to `v8/sft/`:
 
 - model checkpoint
 - compact JSON export
@@ -132,8 +130,8 @@ Rollout setup:
 - Pick a fixed batch of seeds, opponents, and sides.
 - For each environment setting, run a group of sampled policies from the same initial condition.
 - Group size target:
-  - 4 to 8 on 2*T4.
   - 8 to 16 on TPU v5e-8 if environment rollout throughput supports it.
+  - 4 to 8 only for a fallback 2*T4 debugging run.
 - Sampling:
   - top-k or nucleus over legal candidates
   - temperature schedule from exploratory to conservative
@@ -167,7 +165,7 @@ Guardrails:
 - Blend with heuristic/v7 when model confidence is low.
 - Reject any model that increases invalid actions, sun losses, or timeout rate.
 
-Artifacts uploaded to `v7/grpo/`:
+Artifacts uploaded to `v8/grpo/`:
 
 - GRPO checkpoint
 - compact distilled JSON model
@@ -179,25 +177,23 @@ Artifacts uploaded to `v7/grpo/`:
 
 ## Hardware Plan
 
-2*T4 GPU:
-
-- Best for quick PyTorch iteration.
-- Easier setup and fewer TPU-specific issues.
-- Use larger gradient accumulation instead of very large batches.
-- Expected to be enough for SFT and early GRPO.
-
 TPU v5e-8:
 
+- Default runtime for the v8 notebooks.
 - Best for larger SFT batches and high-throughput model updates.
 - Rollout speed may still be CPU-bound because Kaggle environment simulation is Python-heavy.
 - Use TPU mainly for training batches; keep environment workers on CPU.
-- Only use TPU if the notebook confirms `torch_xla` or an equivalent backend works cleanly.
+- Notebooks should set `PJRT_DEVICE=TPU`, require `torch_xla`, and use XLA optimizer steps.
+
+2*T4 GPU:
+
+- Fallback runtime only if TPU/XLA setup fails.
+- Use larger gradient accumulation instead of very large batches.
 
 Recommendation:
 
-- Start SFT on 2*T4 or TPU v5e-8.
-- Start GRPO on 2*T4 for easier debugging.
-- Move GRPO training to TPU only after rollout collection and device transfer are stable.
+- Start SFT and GRPO on TPU v5e-8.
+- Fall back to 2*T4 only for debugging dependency or XLA issues.
 
 ## Distillation and Kaggle Export
 
