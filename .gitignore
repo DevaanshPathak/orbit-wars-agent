@@ -19,3 +19,4 @@ submission*.zip
 submission*.tar
 submission*.tar.gz
 roadmap.md
+.claude/
