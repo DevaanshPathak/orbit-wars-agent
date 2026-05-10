@@ -124,4 +124,4 @@ v9 is a TPU v5e-8 training workbench. It keeps the same compact JSON model forma
 - SFT notebook: [notebooks/v9/sft_tpu_training_policy.ipynb](<notebooks/v9/sft_tpu_training_policy.ipynb>)
 - GRPO notebook: [notebooks/v9/grpo_tpu_training_policy.ipynb](<notebooks/v9/grpo_tpu_training_policy.ipynb>)
 
-Both notebooks are self-contained for Kaggle: they ask for `HF_TOKEN`, write the embedded trainer at runtime, use `torch_xla` on TPU, upload checkpoints every 30 epochs, and save final artifacts to Hugging Face under `v9/sft` and `v9/grpo`.
+Both notebooks are self-contained for Kaggle: they ask for `HF_TOKEN`, execute the embedded trainer in memory, use `torch_xla` on TPU, upload checkpoints every 30 epochs, and save final artifacts to Hugging Face under `v9/sft` and `v9/grpo`. They do not need a companion `.py` file in the Kaggle notebook session.

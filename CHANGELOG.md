@@ -3,7 +3,7 @@
 ## v9 - TPU v5e-8 Candidate Policy Workbench
 
 - Added `notebooks/v9/train_v9_tpu.py`, a TPU-first SFT/GRPO trainer that uses fixed-shape row and pair batches to avoid dynamic XLA recompilation.
-- Added self-contained v9 Kaggle notebooks that write the embedded trainer at runtime, ask for `HF_TOKEN`, target TPU v5e-8 through `torch_xla`, and stream epoch logs.
+- Added self-contained v9 Kaggle notebooks that execute the embedded trainer in memory, ask for `HF_TOKEN`, target TPU v5e-8 through `torch_xla`, and stream epoch logs without needing a companion `.py` file.
 - Added v9 SFT ensemble training across TPU cores with checkpoint uploads under `devaanshpa/orbit-wars-agent/v9/sft/checkpoints`.
 - Added v9 GRPO-style reward tuning across TPU cores with checkpoint uploads under `devaanshpa/orbit-wars-agent/v9/grpo/checkpoints`.
 - Added v9 artifact rules and notes for final JSON exports under `v9/sft` and `v9/grpo`.

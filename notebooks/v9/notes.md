@@ -4,9 +4,9 @@ v9 is the first serious SFT + GRPO scale-up after the v8 smoke pipeline. It is d
 
 ## Files
 
-- `sft_tpu_training_policy.ipynb` is self-contained for Kaggle TPU. It writes the embedded v9 trainer at runtime, asks for `HF_TOKEN`, spawns SFT ensemble members across 8 XLA processes, uploads checkpoints every 30 epochs, and uploads final artifacts to `devaanshpa/orbit-wars-agent/v9/sft`.
-- `grpo_tpu_training_policy.ipynb` is self-contained for Kaggle TPU. It downloads the v9 SFT artifact, spawns GRPO-style reward-tuning members across 8 XLA processes, uploads checkpoints every 30 epochs, and uploads final artifacts to `devaanshpa/orbit-wars-agent/v9/grpo`.
-- `train_v9_tpu.py` is the optional local/CLI copy of the same trainer embedded in both notebooks.
+- `sft_tpu_training_policy.ipynb` is self-contained for Kaggle TPU. It executes the embedded v9 trainer in memory, asks for `HF_TOKEN`, spawns SFT ensemble members across 8 XLA processes, uploads checkpoints every 30 epochs, and uploads final artifacts to `devaanshpa/orbit-wars-agent/v9/sft`.
+- `grpo_tpu_training_policy.ipynb` is self-contained for Kaggle TPU. It downloads the v9 SFT artifact, executes the embedded trainer in memory, spawns GRPO-style reward-tuning members across 8 XLA processes, uploads checkpoints every 30 epochs, and uploads final artifacts to `devaanshpa/orbit-wars-agent/v9/grpo`.
+- `train_v9_tpu.py` is the optional local/CLI copy of the same trainer embedded in both notebooks; the notebooks do not require this file in Kaggle.
 
 ## TPU Design
 
