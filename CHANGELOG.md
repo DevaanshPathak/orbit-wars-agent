@@ -1,13 +1,13 @@
 # Changelog
 
-## v9 - TPU v5e-8 Candidate Policy Workbench
+## v9 - Scaled Counterfactual Ensemble Ranker
 
-- Added `notebooks/v9/train_v9_tpu.py`, a TPU-first SFT/GRPO trainer that uses fixed-shape row and pair batches to avoid dynamic XLA recompilation.
-- Added self-contained v9 Kaggle notebooks that execute the embedded trainer in memory, ask for `HF_TOKEN`, target TPU v5e-8 through `torch_xla`, and stream epoch logs without needing a companion `.py` file.
-- Added v9 SFT ensemble training across TPU cores with checkpoint uploads under `devaanshpa/orbit-wars-agent/v9/sft/checkpoints`.
-- Added v9 GRPO-style reward tuning across TPU cores with checkpoint uploads under `devaanshpa/orbit-wars-agent/v9/grpo/checkpoints`.
-- Added v9 artifact rules and notes for final JSON exports under `v9/sft` and `v9/grpo`.
-- Raised v9 defaults for the next 2500-game both-sides dataset: 8 TPU members, 260 SFT epochs, 180 GRPO epochs, 8192-row and 8192-pair batches, and stronger pair/reward weighting.
+- Removed the experimental TPU SFT/GRPO v9 path after the v8 GRPO smoke submission underperformed the supervised v7 ranker.
+- Added `notebooks/v9/train_v9_ranker.py`, a scaled supervised ensemble trainer based on the v7 counterfactual ranking method.
+- Added `notebooks/v9/v9_training_policy.ipynb`, a self-contained streaming notebook runner that embeds the trainer code, asks for `HF_TOKEN`, downloads the newest Hugging Face `data/*/candidates_v7.csv` by default, and uploads artifacts to `devaanshpa/orbit-wars-agent/v9`.
+- Set v9 defaults for the next 2500-game both-sides dataset: 8 ensemble members, 280 epochs, 4096 batch size, 1.05 pair-loss weight, 12 hard pairs per turn, and tuned blend export.
+- Added per-member checkpoint export every 40 epochs in v9 training; checkpoints upload to `devaanshpa/orbit-wars-agent/v9/checkpoints/` when `--upload` is enabled (configurable via `V9_CHECKPOINT_EVERY` / `--checkpoint-every`).
+- Removed the placeholder v10 notebook folder so the next version starts from a clean plan.
 
 ## v8 - Constrained SFT + GRPO Policy Workbench
 

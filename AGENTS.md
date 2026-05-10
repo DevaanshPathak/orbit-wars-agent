@@ -189,7 +189,7 @@ For v5, upload artifacts to Hugging Face repo `devaanshpa/orbit-wars-agent` unde
 For v6, upload model artifacts and graphs to Hugging Face repo `devaanshpa/orbit-wars-agent` under the remote folder `v6/`.
 For v7, upload model artifacts and graphs to Hugging Face repo `devaanshpa/orbit-wars-agent` under the remote folder `v7/`.
 For v8 SFT/GRPO experiments, upload model artifacts, graphs, and checkpoints to Hugging Face repo `devaanshpa/orbit-wars-agent` under the remote folders `v8/sft/` and `v8/grpo/`.
-For v9 TPU experiments, upload model artifacts, graphs, and checkpoints to Hugging Face repo `devaanshpa/orbit-wars-agent` under the remote folders `v9/sft/` and `v9/grpo/`.
+For v9 supervised ranker experiments, upload model artifacts and graphs to Hugging Face repo `devaanshpa/orbit-wars-agent` under the remote folder `v9/`.
 Notebook auth must ask for `HF_TOKEN` in the notebook runtime and must not print or save the token.
 Downloaded Hugging Face artifacts must go under root `models/`, which must stay gitignored.
 Generated training datasets must go under root `data/<run_start_timestamp>/`, which must stay gitignored, and uploads should use Hugging Face paths like `data/<run_start_timestamp>/`. Do not create one timestamped folder per game.

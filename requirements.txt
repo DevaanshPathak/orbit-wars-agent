@@ -10,5 +10,4 @@ matplotlib>=3.8.0
 # If this fails on Python 3.14, use Python 3.11/3.12 or Kaggle/Colab.
 torch>=2.3.0
 
-# v9 TPU notebooks require torch_xla from a TPU runtime such as Kaggle TPU v5e-8.
-# Install the torch_xla build that matches the runtime PyTorch version; do not pin it here.
+# The v9 path is supervised PyTorch training. TPU-only torch_xla is not required.

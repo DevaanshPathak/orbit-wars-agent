@@ -119,11 +119,17 @@ Both notebooks ask for `HF_TOKEN`, use CUDA on Kaggle GPU T4 x2, print every epo
 
 ## What v9 does
 
-v9 is a TPU v5e-8 training workbench. It keeps the same compact JSON model format, but trains SFT and GRPO-style reward-tuned ensemble members across TPU cores:
+v9 returns to the supervised counterfactual ensemble ranker that beat the RL smoke test, then scales it for the 2500-game both-sides dataset.
 
-- SFT notebook: [notebooks/v9/sft_tpu_training_policy.ipynb](<notebooks/v9/sft_tpu_training_policy.ipynb>)
-- GRPO notebook: [notebooks/v9/grpo_tpu_training_policy.ipynb](<notebooks/v9/grpo_tpu_training_policy.ipynb>)
+- Training notebook: [notebooks/v9/v9_training_policy.ipynb](<notebooks/v9/v9_training_policy.ipynb>)
+- Direct trainer: [notebooks/v9/train_v9_ranker.py](<notebooks/v9/train_v9_ranker.py>)
 
-Both notebooks are self-contained for Kaggle: they ask for `HF_TOKEN`, execute the embedded trainer in memory, use `torch_xla` on TPU, upload checkpoints every 30 epochs, and save final artifacts to Hugging Face under `v9/sft` and `v9/grpo`. They do not need a companion `.py` file in the Kaggle notebook session.
+The notebook is self-contained for Kaggle/Colab: it asks for `HF_TOKEN`, embeds the trainer code directly, streams every epoch, downloads the newest Hugging Face `data/*/candidates_v7.csv` by default, and uploads artifacts to Hugging Face under `v9/`. Set `CANDIDATES_CSV` or `V9_PREFER_LOCAL_DATA=1` only for local ablations.
 
-The current v9 defaults target a larger 2500-game both-sides dataset: 8 TPU members, 260 SFT epochs, 180 GRPO epochs, 8192-row and 8192-pair batches, and conservative KL anchoring for GRPO.
+The current v9 defaults are 8 ensemble members, 280 epochs, 4096 batch size, 1.05 pair-loss weight, 12 hard pairs per turn, 0.13 dropout, and tuned runtime blend export.
+
+After training, build a gitignored submission file with:
+
+```bash
+python build_submission.py --weights notebooks/v9/exports/model_weights_v9.json --output models/v9_kaggle/main.py
+```
