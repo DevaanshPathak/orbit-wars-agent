@@ -1193,6 +1193,55 @@ def _candidate_score(state, target, send, eta, kind, policy=None):
     return score
 
 
+def _candidate_signature(candidate):
+    parts = tuple((int(source_id), int(ships)) for source_id, _, ships in candidate.parts)
+    return (
+        candidate.kind,
+        int(candidate.target_id),
+        round(float(candidate.eta), 1),
+        int(candidate.ships),
+        parts,
+    )
+
+
+def _candidate_rank_context(candidates):
+    if not candidates:
+        return {}
+    count = float(len(candidates))
+    by_score = sorted(candidates, key=lambda candidate: candidate.score, reverse=True)
+    top_score = float(by_score[0].score)
+    by_eta = sorted(candidates, key=lambda candidate: candidate.eta)
+    eta_rank = {
+        _candidate_signature(candidate): (rank + 1) / count
+        for rank, candidate in enumerate(by_eta)
+    }
+    by_kind = {}
+    for candidate in candidates:
+        by_kind.setdefault(candidate.kind, []).append(candidate)
+    same_kind_rank = {}
+    for items in by_kind.values():
+        items.sort(key=lambda candidate: candidate.score, reverse=True)
+        kind_count = float(len(items))
+        for rank, candidate in enumerate(items):
+            same_kind_rank[_candidate_signature(candidate)] = (rank + 1) / max(1.0, kind_count)
+
+    context = {}
+    selected_score = top_score
+    for rank, candidate in enumerate(by_score, 1):
+        key = _candidate_signature(candidate)
+        score = float(candidate.score)
+        context[key] = {
+            "turn_candidate_count": count,
+            "heuristic_rank": float(rank),
+            "heuristic_rank_fraction": float(rank) / count,
+            "heuristic_score_gap_to_top": top_score - score,
+            "heuristic_score_gap_to_selected": score - selected_score,
+            "same_kind_rank_fraction": float(same_kind_rank.get(key, 1.0)),
+            "eta_rank_fraction": float(eta_rank.get(key, 1.0)),
+        }
+    return context
+
+
 def _candidate_features(state, candidate, policy=None):
     target = state.planet_by_id.get(candidate.target_id)
     if target is None:
@@ -1213,6 +1262,7 @@ def _candidate_features(state, candidate, policy=None):
     reserve = policy.get("reserve", {})
     attack_budget = policy.get("attack_budget", {})
     indirect_value = policy.get("indirect_value", {})
+    rank_context = policy.get("candidate_rank_context", {})
 
     for source_id, _, _ in candidate.parts:
         source = state.planet_by_id.get(source_id)
@@ -1243,6 +1293,11 @@ def _candidate_features(state, candidate, policy=None):
     enemy_pressure = float(enemy_ships) / max(1.0, projected_garrison + float(target.ships))
     my_reach_advantage = float(my_ships) - float(enemy_ships)
     source_commit_fraction = ships_sent / max(1.0, source_budget_sum)
+    candidate_rank = rank_context.get(_candidate_signature(candidate), {})
+    phase_opening = 1.0 if state.step < OPENING_END_STEP else 0.0
+    phase_midgame = 1.0 if OPENING_END_STEP <= state.step < 250 else 0.0
+    phase_lategame = 1.0 if 250 <= state.step < ENDGAME_STEP else 0.0
+    phase_endgame = 1.0 if state.step >= ENDGAME_STEP else 0.0
 
     features = {
         "step": float(state.step),
@@ -1260,10 +1315,10 @@ def _candidate_features(state, candidate, policy=None):
         "enemy_production": float(state.enemy_production),
         "production_gap": float(state.my_production - state.enemy_production),
         "production_ratio": float(state.my_production) / max(1.0, float(state.enemy_production)),
-        "phase_opening": 1.0 if state.step < OPENING_END_STEP else 0.0,
-        "phase_midgame": 1.0 if OPENING_END_STEP <= state.step < 250 else 0.0,
-        "phase_lategame": 1.0 if 250 <= state.step < ENDGAME_STEP else 0.0,
-        "phase_endgame": 1.0 if state.step >= ENDGAME_STEP else 0.0,
+        "phase_opening": phase_opening,
+        "phase_midgame": phase_midgame,
+        "phase_lategame": phase_lategame,
+        "phase_endgame": phase_endgame,
         "target_owner_neutral": 1.0 if target.owner == -1 else 0.0,
         "target_owner_enemy": 1.0 if target.owner not in (-1, state.player) else 0.0,
         "target_owner_projected_mine": 1.0 if owner_at_eta == state.player else 0.0,
@@ -1303,6 +1358,23 @@ def _candidate_features(state, candidate, policy=None):
         "capture_margin_ratio": float(capture_margin) / max(1.0, projected_garrison + 1.0),
         "indirect_value": float(indirect_value.get(target.id, 0.0)),
         "heuristic_score_scaled": float(candidate.score) / 100.0,
+        "turn_candidate_count": float(candidate_rank.get("turn_candidate_count", 1.0)),
+        "heuristic_rank": float(candidate_rank.get("heuristic_rank", 1.0)),
+        "heuristic_rank_fraction": float(candidate_rank.get("heuristic_rank_fraction", 1.0)),
+        "heuristic_score_gap_to_top": float(candidate_rank.get("heuristic_score_gap_to_top", 0.0)),
+        "heuristic_score_gap_to_selected": float(candidate_rank.get("heuristic_score_gap_to_selected", 0.0)),
+        "same_kind_rank_fraction": float(candidate_rank.get("same_kind_rank_fraction", 1.0)),
+        "eta_rank_fraction": float(candidate_rank.get("eta_rank_fraction", 1.0)),
+        "turn_advantage": 0.0,
+        "future_advantage_delta_5": 0.0,
+        "future_advantage_delta_15": 0.0,
+        "future_advantage_delta_30": 0.0,
+        "future_production_delta_15": 0.0,
+        "future_planet_delta_15": 0.0,
+        "phase_kind_expand_opening": phase_opening if kind == "expand" else 0.0,
+        "phase_kind_attack_endgame": phase_endgame if kind == "attack" else 0.0,
+        "phase_kind_comet_midgame": phase_midgame if kind == "comet" else 0.0,
+        "phase_kind_defend_under_pressure": 1.0 if kind in ("defend", "recapture") and enemy_pressure > 0.45 else 0.0,
         "kind_expand": 1.0 if kind == "expand" else 0.0,
         "kind_attack": 1.0 if kind == "attack" else 0.0,
         "kind_comet": 1.0 if kind == "comet" else 0.0,
@@ -1321,6 +1393,19 @@ def _model_score_candidate(features, model=None):
     if not model:
         return 0.0
     model_type = str(model.get("model_type", ""))
+
+    if model_type.startswith("ensemble"):
+        members = model.get("members", [])
+        if not members:
+            return 0.0
+        total = 0.0
+        used = 0
+        for member in members:
+            if not member:
+                continue
+            total += _model_score_candidate(features, member)
+            used += 1
+        return total / max(1, used)
 
     if model_type.startswith("mlp"):
         feature_names = model.get("features", [])
@@ -2343,12 +2428,14 @@ def _deep_planner_select(state, available, claimed_targets, planned_commitments,
                 planned_commitments=entry["planned"],
                 policy=policy,
             )
+            score_policy = dict(policy)
+            score_policy["candidate_rank_context"] = _candidate_rank_context(candidates)
             scored = []
             for candidate in candidates:
                 if candidate.kind not in ("expand", "attack", "comet"):
                     continue
-                score = _score_candidate_v5(state, candidate, policy)
-                bundle_value = score + _planner_projected_value(state, candidate, policy)
+                score = _score_candidate_v5(state, candidate, score_policy)
+                bundle_value = score + _planner_projected_value(state, candidate, score_policy)
                 if bundle_value < _selection_threshold(state, candidate):
                     continue
                 scored.append((bundle_value, candidate))
@@ -2490,9 +2577,11 @@ def _choose_moves(state, deadline=None):
         )
         if not candidates:
             break
-        candidates.sort(key=lambda c: _score_candidate_v5(state, c, policy), reverse=True)
+        score_policy = dict(policy)
+        score_policy["candidate_rank_context"] = _candidate_rank_context(candidates)
+        candidates.sort(key=lambda c: _score_candidate_v5(state, c, score_policy), reverse=True)
         chosen = candidates[0]
-        if _score_candidate_v5(state, chosen, policy) < _selection_threshold(state, chosen):
+        if _score_candidate_v5(state, chosen, score_policy) < _selection_threshold(state, chosen):
             break
         if _apply_candidate(chosen, available, moves, planned_commitments, state.player):
             claimed_targets.add(chosen.target_id)

@@ -1,5 +1,22 @@
 # Changelog
 
+## v8 - Constrained SFT + GRPO Policy Workbench
+
+- Added `notebooks/v8` with SFT and GRPO training entrypoints that keep Orbit Wars legality inside the existing candidate generator.
+- Added a listwise SFT trainer that learns per-turn candidate selection from v7/v8 candidate CSV groups and exports Kaggle-compatible JSON MLP weights.
+- Added a constrained GRPO-style policy improvement trainer that starts from the SFT artifact, samples legal candidates, applies group-relative advantages, and uploads artifacts under the requested Hugging Face paths.
+- Added v8 notebook notes and streaming notebook launchers so SFT and GRPO runs ask for `HF_TOKEN`, show logs, save graphs, and avoid GitHub-tracked model outputs.
+- Updated the GRPO path to download the SFT artifact from Hugging Face by default using `HF_TOKEN`, with local SFT JSON only as an explicit override.
+- Updated the SFT path to download the newest Hugging Face `data/*/candidates_v7.csv` by default using `HF_TOKEN`, with local CSV only as an explicit override.
+- Set explicit v8 notebook training defaults for 100 both-sides datasets on Kaggle 2*T4, including SFT epochs/ensemble/batch settings and GRPO KL/anchor/batch settings.
+
+## v7 - Counterfactual Ensemble Ranker
+
+- Updated `generate_training_data.py` to produce `candidates_v7.csv` with turn-delta credit, counterfactual positives, and failure metadata for overcommit, missed tactical moves, missed comets, and slow openings.
+- Added `notebooks/v7` with a streaming notebook launcher and an ensemble MLP ranker trainer that uploads artifacts under `devaanshpa/orbit-wars-agent/v7`.
+- Extended the runtime model scorer to average ensemble JSON artifacts while keeping trained weights out of GitHub.
+- Tuned v7 defaults for 1000-game/both-sides datasets: larger candidate pool, stronger pairwise loss, larger batches, longer patience, and a 4-member ensemble.
+
 ## v6 - Outcome-Weighted Candidate Ranker
 
 - Added outcome-weighted `candidates_v6.csv` generation so selected moves from winning games train as stronger positives and selected moves from losses are downweighted.

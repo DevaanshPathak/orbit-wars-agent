@@ -11,14 +11,15 @@ import os
 import random
 import sys
 import time
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
 
 HF_REPO_ID = "devaanshpa/orbit-wars-agent"
 HF_REPO_TYPE = "model"
-VERSION = "v6_outcome_teacher"
-CSV_BASENAME = "candidates_v6.csv"
+VERSION = "v7_counterfactual_teacher"
+CSV_BASENAME = "candidates_v7.csv"
 
 make = None
 Planet = None
@@ -84,6 +85,23 @@ FEATURE_FIELDS = [
     "capture_margin_ratio",
     "indirect_value",
     "heuristic_score_scaled",
+    "turn_candidate_count",
+    "heuristic_rank",
+    "heuristic_rank_fraction",
+    "heuristic_score_gap_to_top",
+    "heuristic_score_gap_to_selected",
+    "same_kind_rank_fraction",
+    "eta_rank_fraction",
+    "turn_advantage",
+    "future_advantage_delta_5",
+    "future_advantage_delta_15",
+    "future_advantage_delta_30",
+    "future_production_delta_15",
+    "future_planet_delta_15",
+    "phase_kind_expand_opening",
+    "phase_kind_attack_endgame",
+    "phase_kind_comet_midgame",
+    "phase_kind_defend_under_pressure",
     "kind_expand",
     "kind_attack",
     "kind_comet",
@@ -103,6 +121,13 @@ METADATA_FIELDS = [
     "reward_margin",
     "agent_reward",
     "opponent_reward",
+    "selected_heuristic_rank",
+    "counterfactual_positive",
+    "counterfactual_reason",
+    "failure_overcommit",
+    "failure_missed_tactical",
+    "failure_missed_comet",
+    "failure_slow_expansion",
     "game_id",
     "candidate_id",
     "version",
@@ -534,53 +559,191 @@ def final_rewards_from_env(env, side):
     return agent_reward, opponent_reward, margin, result
 
 
-def relabel_rows_with_outcome(rows, agent_reward, opponent_reward, margin, result):
-    margin_unit = max(-1.0, min(1.0, margin / 700.0))
-    for row in rows:
-        selected = float(row.get("selected", 0.0) or 0.0) >= 0.5
-        tactical = any(
-            float(row.get(name, 0.0) or 0.0) >= 0.5
-            for name in ("kind_defend", "kind_recapture", "kind_evacuate")
-        )
-        opportunistic = any(
-            float(row.get(name, 0.0) or 0.0) >= 0.5
-            for name in ("kind_snipe", "kind_crash", "kind_comet")
-        )
+def row_float(row, key, default=0.0):
+    try:
+        return float(row.get(key, default) or default)
+    except (TypeError, ValueError):
+        return float(default)
 
-        if selected:
-            if result > 0.0:
-                label = 0.80 + 0.18 * max(0.0, margin_unit)
-                weight = 1.35 + 0.75 * abs(margin_unit)
-            elif result < 0.0:
-                label = 0.18 + 0.22 * max(0.0, 1.0 + margin_unit)
-                weight = 0.95 + 0.55 * abs(margin_unit)
-            else:
-                label = 0.55
-                weight = 1.00
-            if tactical:
-                label = max(label, 0.82 if result >= 0.0 else 0.68)
-                weight += 0.80
-            elif opportunistic and result >= 0.0:
-                label = max(label, 0.74)
-                weight += 0.25
-        else:
-            if result > 0.0:
-                label = 0.04
-                weight = 0.75
-            elif result < 0.0:
-                label = 0.02
-                weight = 0.65
-            else:
-                label = 0.08
-                weight = 0.55
 
-        row["label"] = round(max(0.0, min(1.0, label)), 6)
-        row["outcome_weight"] = round(max(0.05, weight), 6)
-        row["game_result"] = result
-        row["reward_margin"] = round(margin, 6)
-        row["agent_reward"] = round(agent_reward, 6)
-        row["opponent_reward"] = round(opponent_reward, 6)
-    return rows
+def is_kind(row, *names):
+    return any(row_float(row, f"kind_{name}", 0.0) >= 0.5 for name in names)
+
+
+def evaluate_obs_advantage(obs):
+    planets = planets_from(obs)
+    fleets = [main.Fleet(*f) for f in obs_get(obs, "fleets", [])]
+    player = obs_get(obs, "player", 0)
+    my_planets = [p for p in planets if p.owner == player]
+    enemy_planets = [p for p in planets if p.owner not in (-1, player)]
+    my_planet_ships = sum(float(p.ships) for p in my_planets)
+    enemy_planet_ships = sum(float(p.ships) for p in enemy_planets)
+    my_fleet_ships = sum(float(f.ships) for f in fleets if f.owner == player)
+    enemy_fleet_ships = sum(float(f.ships) for f in fleets if f.owner not in (-1, player))
+    my_production = sum(float(p.production) for p in my_planets)
+    enemy_production = sum(float(p.production) for p in enemy_planets)
+    my_planet_count = len(my_planets)
+    enemy_planet_count = len(enemy_planets)
+    ship_gap = (my_planet_ships + 0.55 * my_fleet_ships) - (enemy_planet_ships + 0.55 * enemy_fleet_ships)
+    production_gap = my_production - enemy_production
+    planet_gap = my_planet_count - enemy_planet_count
+    advantage = ship_gap + production_gap * 24.0 + planet_gap * 18.0
+    return {
+        "advantage": advantage,
+        "production_gap": production_gap,
+        "planet_gap": float(planet_gap),
+    }
+
+
+def _future_delta(step_values, step, key, horizon):
+    if not step_values:
+        return 0.0
+    future_steps = [known_step for known_step in step_values if known_step >= step + horizon]
+    if future_steps:
+        future_step = min(future_steps)
+    else:
+        future_step = max(step_values)
+    return float(step_values[future_step].get(key, 0.0)) - float(step_values.get(step, {}).get(key, 0.0))
+
+
+def reason_for_counterfactual(row, selected_row, result, delta_15):
+    if result >= 0.0 and delta_15 >= -6.0:
+        return ""
+    if is_kind(row, "defend", "recapture", "evacuate"):
+        return "missed_tactical"
+    if is_kind(row, "comet") and row_float(row, "eta", 999.0) <= 24.0:
+        return "missed_comet"
+    if is_kind(row, "expand") and row_float(row, "phase_opening") >= 0.5:
+        if row_float(row, "target_prod_per_eta") >= row_float(selected_row, "target_prod_per_eta", -999.0):
+            return "slow_expansion"
+    if is_kind(row, "attack", "snipe", "crash") and row_float(row, "capture_margin") > 1.0:
+        return "missed_attack"
+    return "higher_ranked_alternative"
+
+
+def relabel_rows_with_outcome(rows, agent_reward, opponent_reward, margin, result, step_values=None):
+    step_values = step_values or {}
+    margin_scale = max(120.0, abs(margin))
+    margin_unit = max(-1.0, min(1.0, margin / margin_scale))
+    by_turn = defaultdict(list)
+    for index, row in enumerate(rows):
+        step = int(row_float(row, "step", 0.0))
+        by_turn[(row.get("game_id", ""), step)].append((index, row))
+
+    failure_counts = defaultdict(int)
+    for _, items in by_turn.items():
+        ordered = sorted(
+            items,
+            key=lambda item: row_float(item[1], "heuristic_score_scaled", -999.0),
+            reverse=True,
+        )
+        selected_items = [item for item in ordered if row_float(item[1], "selected", 0.0) >= 0.5]
+        selected_row = selected_items[0][1] if selected_items else ordered[0][1]
+        selected_score = row_float(selected_row, "heuristic_score_scaled", 0.0)
+        selected_rank = next(
+            (rank for rank, (_, row) in enumerate(ordered, 1) if row is selected_row),
+            len(ordered),
+        )
+        top_score = row_float(ordered[0][1], "heuristic_score_scaled", 0.0)
+        by_eta = sorted(items, key=lambda item: row_float(item[1], "eta", 999.0))
+        eta_ranks = {id(row): (rank + 1) / max(1.0, float(len(by_eta))) for rank, (_, row) in enumerate(by_eta)}
+        same_kind = defaultdict(list)
+        for item in items:
+            same_kind[
+                next((name for name in ("expand", "attack", "comet", "snipe", "recapture", "crash", "stage", "defend", "evacuate") if is_kind(item[1], name)), "other")
+            ].append(item)
+        same_kind_ranks = {}
+        for kind_items in same_kind.values():
+            kind_items.sort(key=lambda item: row_float(item[1], "heuristic_score_scaled", -999.0), reverse=True)
+            for rank, (_, row) in enumerate(kind_items):
+                same_kind_ranks[id(row)] = (rank + 1) / max(1.0, float(len(kind_items)))
+
+        for rank, (_, row) in enumerate(ordered, 1):
+            step = int(row_float(row, "step", 0.0))
+            turn_advantage = float(step_values.get(step, {}).get("advantage", 0.0))
+            delta_5 = _future_delta(step_values, step, "advantage", 5)
+            delta_15 = _future_delta(step_values, step, "advantage", 15)
+            delta_30 = _future_delta(step_values, step, "advantage", 30)
+            production_delta_15 = _future_delta(step_values, step, "production_gap", 15)
+            planet_delta_15 = _future_delta(step_values, step, "planet_gap", 15)
+            delta_signal = max(-1.0, min(1.0, delta_15 / 120.0))
+            selected = row_float(row, "selected", 0.0) >= 0.5
+            score = row_float(row, "heuristic_score_scaled", 0.0)
+            tactical = is_kind(row, "defend", "recapture", "evacuate")
+            comet = is_kind(row, "comet")
+            opening_expand = is_kind(row, "expand") and row_float(row, "phase_opening") >= 0.5
+            expensive_commit = row_float(row, "source_commit_fraction") > 0.78 or row_float(row, "ship_cost_fraction") > 0.28
+            counterfactual = False
+            reason = ""
+
+            if selected:
+                label = 0.48 + 0.30 * delta_signal + 0.10 * max(0.0, margin_unit)
+                weight = 0.75 + abs(delta_signal) * 1.60 + min(0.85, abs(margin_unit) * 0.65)
+                if result == 0.0:
+                    weight *= 0.30
+                if delta_15 < -14.0 and expensive_commit and not tactical:
+                    label = min(label, 0.22)
+                    weight += 0.70
+                    failure_counts["overcommit"] += 1
+                if tactical and delta_15 >= -8.0:
+                    label = max(label, 0.68)
+                    weight += 0.55
+            else:
+                # Most unselected candidates are unknown, not true negatives. Keep them soft
+                # and low-weight unless turn context says they were plausible corrections.
+                label = max(0.08, min(0.42, 0.24 + 0.12 * (score - selected_score)))
+                weight = 0.18 + min(0.35, max(0.0, top_score - score) * 0.08)
+                hard_alternative = rank <= 5 and score >= selected_score - 0.08
+                if hard_alternative and (delta_15 < -8.0 or result < 0.0):
+                    reason = reason_for_counterfactual(row, selected_row, result, delta_15)
+                    counterfactual = True
+                    label = 0.56 + min(0.20, max(0.0, score - selected_score) * 0.08)
+                    weight = 1.00 + min(1.30, abs(delta_signal) * 1.30 + abs(margin_unit) * 0.55)
+                    if tactical:
+                        label = 0.78
+                        weight += 0.85
+                        failure_counts["missed_tactical"] += 1
+                    elif comet:
+                        label = 0.68
+                        weight += 0.45
+                        failure_counts["missed_comet"] += 1
+                    elif opening_expand:
+                        label = 0.64
+                        weight += 0.35
+                        failure_counts["slow_expansion"] += 1
+
+            row["label"] = round(max(0.0, min(1.0, label)), 6)
+            row["outcome_weight"] = round(max(0.05, weight), 6)
+            row["game_result"] = result
+            row["reward_margin"] = round(margin, 6)
+            row["agent_reward"] = round(agent_reward, 6)
+            row["opponent_reward"] = round(opponent_reward, 6)
+            row["selected_heuristic_rank"] = selected_rank
+            row["counterfactual_positive"] = 1.0 if counterfactual else 0.0
+            row["counterfactual_reason"] = reason
+            row["failure_overcommit"] = 1.0 if selected and expensive_commit and delta_15 < -14.0 and not tactical else 0.0
+            row["failure_missed_tactical"] = 1.0 if reason == "missed_tactical" else 0.0
+            row["failure_missed_comet"] = 1.0 if reason == "missed_comet" else 0.0
+            row["failure_slow_expansion"] = 1.0 if reason == "slow_expansion" else 0.0
+            row["turn_candidate_count"] = len(ordered)
+            row["heuristic_rank"] = rank
+            row["heuristic_rank_fraction"] = round(rank / max(1.0, float(len(ordered))), 6)
+            row["heuristic_score_gap_to_top"] = round(top_score - score, 6)
+            row["heuristic_score_gap_to_selected"] = round(score - selected_score, 6)
+            row["same_kind_rank_fraction"] = round(float(same_kind_ranks.get(id(row), 1.0)), 6)
+            row["eta_rank_fraction"] = round(float(eta_ranks.get(id(row), 1.0)), 6)
+            row["turn_advantage"] = round(turn_advantage, 6)
+            row["future_advantage_delta_5"] = round(delta_5, 6)
+            row["future_advantage_delta_15"] = round(delta_15, 6)
+            row["future_advantage_delta_30"] = round(delta_30, 6)
+            row["future_production_delta_15"] = round(production_delta_15, 6)
+            row["future_planet_delta_15"] = round(planet_delta_15, 6)
+            row["phase_kind_expand_opening"] = 1.0 if opening_expand else 0.0
+            row["phase_kind_attack_endgame"] = 1.0 if is_kind(row, "attack") and row_float(row, "phase_endgame") >= 0.5 else 0.0
+            row["phase_kind_comet_midgame"] = 1.0 if comet and row_float(row, "phase_midgame") >= 0.5 else 0.0
+            row["phase_kind_defend_under_pressure"] = 1.0 if tactical and row_float(row, "enemy_pressure") > 0.45 else 0.0
+            row["version"] = VERSION
+    return dict(failure_counts)
 
 
 class CsvRecorder:
@@ -666,11 +829,14 @@ def generate_game_rows(task):
     opponent = resolve_opponent(opponent_name)
     game_id = f"seed_{seed}_p{side}_vs_{opponent_name}"
     rows = []
+    step_values = {}
     turns_logged = 0
     start = time.perf_counter()
 
     def logging_agent(obs, config=None):
         nonlocal turns_logged
+        step = int(obs_get(obs, "step", 0) or 0)
+        step_values[step] = evaluate_obs_advantage(obs)
         turn_rows = candidate_rows_from_obs(
             obs,
             game_id,
@@ -690,8 +856,13 @@ def generate_game_rows(task):
             env.run([opponent, logging_agent])
 
     agent_reward, opponent_reward, margin, result = final_rewards_from_env(env, side)
-    relabel_rows_with_outcome(rows, agent_reward, opponent_reward, margin, result)
+    failure_counts = relabel_rows_with_outcome(
+        rows, agent_reward, opponent_reward, margin, result, step_values
+    )
     positives = sum(1 for row in rows if float(row["label"]) >= 0.5)
+    counterfactuals = sum(
+        1 for row in rows if row_float(row, "counterfactual_positive", 0.0) >= 0.5
+    )
     return {
         "game_id": game_id,
         "seed": seed,
@@ -704,6 +875,8 @@ def generate_game_rows(task):
         "rows": rows,
         "row_count": len(rows),
         "positive_rows": positives,
+        "counterfactual_rows": counterfactuals,
+        "failure_counts": failure_counts,
         "turns_logged": turns_logged,
         "duration_seconds": time.perf_counter() - start,
     }
@@ -732,7 +905,7 @@ def iter_tasks(args):
             )
 
 
-def log_progress(done, total, rows, positives, turns, started_at, last_result=None):
+def log_progress(done, total, rows, positives, counterfactuals, turns, started_at, last_result=None):
     elapsed = max(1e-6, time.time() - started_at)
     games_per_min = done / elapsed * 60.0
     rows_per_sec = rows / elapsed
@@ -749,12 +922,13 @@ def log_progress(done, total, rows, positives, turns, started_at, last_result=No
         tail = (
             f" last={last_result['game_id']} "
             f"result={result_text} margin={last_result.get('reward_margin', 0.0):.1f} "
-            f"rows={last_result['row_count']} "
+            f"rows={last_result['row_count']} cf={last_result.get('counterfactual_rows', 0)} "
             f"turns={last_result['turns_logged']} "
             f"time={last_result['duration_seconds']:.1f}s"
         )
     print(
-        f"games={done}/{total} rows={rows} positive={positives} turns={turns} "
+        f"games={done}/{total} rows={rows} positive={positives} "
+        f"counterfactual={counterfactuals} turns={turns} "
         f"rate={games_per_min:.2f}g/min {rows_per_sec:.1f}rows/s eta={eta/60.0:.1f}m"
         f"{tail}",
         flush=True,
@@ -779,14 +953,14 @@ def upload_to_hf(run_dir, run_start_timestamp, repo_id, repo_type):
         repo_id=repo_id,
         repo_type=repo_type,
         path_in_repo=remote_path,
-        commit_message=f"Upload Orbit Wars v6 training data {run_start_timestamp}",
+        commit_message=f"Upload Orbit Wars v7 training data {run_start_timestamp}",
     )
     return remote_path
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Generate Orbit Wars v6 outcome-weighted candidate training data.")
-    parser.add_argument("--games", type=int, default=200)
+    parser = argparse.ArgumentParser(description="Generate Orbit Wars v7 counterfactual candidate training data.")
+    parser.add_argument("--games", type=int, default=500)
     parser.add_argument("--seed-start", type=int, default=1)
     parser.add_argument(
         "--opponents",
@@ -799,9 +973,9 @@ def parse_args():
         "--one-side",
         action="store_false",
         dest="both_sides",
-        help="Only log player 0 games. By default v6 logs both sides.",
+        help="Only log player 0 games. By default v7 logs both sides.",
     )
-    parser.add_argument("--max-candidates-per-turn", type=int, default=30)
+    parser.add_argument("--max-candidates-per-turn", type=int, default=42)
     parser.add_argument("--max-rows", type=int, default=0)
     parser.add_argument("--progress-every", type=int, default=1)
     parser.add_argument("--workers", type=int, default=1)
@@ -840,8 +1014,10 @@ def main_cli():
     total_tasks = args.games * (2 if args.both_sides else 1)
     rows_written = 0
     positive_rows = 0
+    counterfactual_rows = 0
     turns_logged = 0
     games_run = 0
+    failure_totals = defaultdict(int)
     with csv_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
         writer.writeheader()
@@ -867,6 +1043,11 @@ def main_cli():
                 positive_rows += sum(
                     1 for row in rows_to_write if float(row["label"]) >= 0.5
                 )
+                counterfactual_rows += sum(
+                    1 for row in rows_to_write if row_float(row, "counterfactual_positive", 0.0) >= 0.5
+                )
+                for key, value in game_result.get("failure_counts", {}).items():
+                    failure_totals[key] += int(value)
                 turns_logged += game_result["turns_logged"]
                 if games_run % args.progress_every == 0 or games_run == total_tasks:
                     log_progress(
@@ -874,6 +1055,7 @@ def main_cli():
                         total_tasks,
                         rows_written,
                         positive_rows,
+                        counterfactual_rows,
                         turns_logged,
                         started_at,
                         game_result,
@@ -902,6 +1084,11 @@ def main_cli():
                     positive_rows += sum(
                         1 for row in rows_to_write if float(row["label"]) >= 0.5
                     )
+                    counterfactual_rows += sum(
+                        1 for row in rows_to_write if row_float(row, "counterfactual_positive", 0.0) >= 0.5
+                    )
+                    for key, value in result.get("failure_counts", {}).items():
+                        failure_totals[key] += int(value)
                     turns_logged += result["turns_logged"]
                     if games_run % args.progress_every == 0 or games_run == total_tasks:
                         log_progress(
@@ -909,6 +1096,7 @@ def main_cli():
                             total_tasks,
                             rows_written,
                             positive_rows,
+                            counterfactual_rows,
                             turns_logged,
                             started_at,
                             result,
@@ -929,10 +1117,12 @@ def main_cli():
         "workers": args.workers,
         "rows": rows_written,
         "positive_rows": positive_rows,
+        "counterfactual_rows": counterfactual_rows,
+        "failure_totals": dict(failure_totals),
         "turns_logged": turns_logged,
         "csv_path": str(csv_path),
         "csv_basename": CSV_BASENAME,
-        "label_strategy": "outcome_weighted_selected_candidates",
+        "label_strategy": "turn_delta_counterfactual_pairwise_rank",
         "duration_seconds": round(time.time() - started_at, 3),
         "feature_fields": FEATURE_FIELDS,
         "metadata_fields": METADATA_FIELDS,

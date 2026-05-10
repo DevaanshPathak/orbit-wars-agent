@@ -187,7 +187,10 @@ Do not commit or push trained models, checkpoints, exported weights, replay data
 Training notebooks must upload generated version artifacts to Hugging Face instead of storing them in git.
 For v5, upload artifacts to Hugging Face repo `devaanshpa/orbit-wars-agent` under the remote folder `v5/`.
 For v6, upload model artifacts and graphs to Hugging Face repo `devaanshpa/orbit-wars-agent` under the remote folder `v6/`.
+For v7, upload model artifacts and graphs to Hugging Face repo `devaanshpa/orbit-wars-agent` under the remote folder `v7/`.
+For v8 SFT/GRPO experiments, upload model artifacts and graphs to Hugging Face repo `devaanshpa/orbit-wars-agent` under the remote folders `v7/sft/` and `v7/grpo/` unless a new remote layout is explicitly requested.
 Notebook auth must ask for `HF_TOKEN` in the notebook runtime and must not print or save the token.
 Downloaded Hugging Face artifacts must go under root `models/`, which must stay gitignored.
 Generated training datasets must go under root `data/<run_start_timestamp>/`, which must stay gitignored, and uploads should use Hugging Face paths like `data/<run_start_timestamp>/`. Do not create one timestamped folder per game.
 For v6 data, prefer outcome-weighted `candidates_v6.csv` generated from both sides and the full baseline opponent mix unless a smaller smoke test is explicitly being run. Use the optional `self` opponent for slower self-play batches, not as the default data-generation path.
+For v7 data, prefer `candidates_v7.csv` from `generate_training_data.py`, which adds turn-delta credit, counterfactual positives, and failure metadata; do not train v7 artifacts from v6 CSVs unless explicitly doing an ablation.

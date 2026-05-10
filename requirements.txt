@@ -6,6 +6,6 @@ kaggle>=2.0.1
 huggingface-hub>=0.23.0
 matplotlib>=3.8.0
 
-# PyTorch is required only for notebooks/v6/train_v6_ranker.py.
+# PyTorch is required for notebooks/v6, notebooks/v7, and notebooks/v8 training.
 # If this fails on Python 3.14, use Python 3.11/3.12 or Kaggle/Colab.
 torch>=2.3.0

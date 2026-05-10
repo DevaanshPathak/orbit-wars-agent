@@ -24,20 +24,20 @@ python test_local.py --games 10 --baselines random nearest starter greedy rusher
 python test_local.py --games 50 --compare-git-ref 8f5b855
 ```
 
-## Generate v6 training data
+## Generate training data
 
-The generator runs local games, logs candidate features at decision time, relabels rows using the final game outcome, writes one folder for the whole run under gitignored `data/<run_start_timestamp>/`, and uploads that run folder to Hugging Face under `devaanshpa/orbit-wars-agent/data/<run_start_timestamp>`.
+The generator runs local games, logs candidate features at decision time, adds turn-delta credit and counterfactual labels, writes one folder for the whole run under gitignored `data/<run_start_timestamp>/`, and uploads that run folder to Hugging Face under `devaanshpa/orbit-wars-agent/data/<run_start_timestamp>`.
 
 ```bash
-python generate_training_data.py --games 300 --workers 16
+python generate_training_data.py --games 1000 --workers 16 --max-candidates-per-turn 48
 ```
 
-Each game is identified inside `candidates_v6.csv` by `game_id`; games do not create separate timestamped folders. v6 defaults to both player sides, the full local baseline mix (`random nearest starter greedy rusher`), and 30 candidate rows per turn. Add `self` to `--opponents` only for slower self-play runs.
+Each game is identified inside `candidates_v7.csv` by `game_id`; games do not create separate timestamped folders. v7 defaults to both player sides and the full local baseline mix (`random nearest starter greedy rusher`). Add `self` to `--opponents` only for slower self-play runs.
 
 For more visible progress and better CPU use on a multi-core machine:
 
 ```bash
-python generate_training_data.py --games 300 --workers 16 --max-candidates-per-turn 36
+python generate_training_data.py --games 1500 --workers 16 --max-candidates-per-turn 54
 ```
 
 For a local smoke test without upload:
@@ -49,6 +49,8 @@ python generate_training_data.py --games 1 --max-rows 200 --one-side --no-upload
 The generator does not need a GPU. Orbit Wars game simulation and candidate extraction are CPU-bound Python work. Low total CPU usage usually means a single Python worker is saturating one core; use `--workers` to run independent games in parallel.
 
 Kaggle may print optional OpenSpiel environment warnings in some installs. The generator suppresses that import noise by default; pass `--show-env-imports` if you need to debug Kaggle environment loading.
+
+This writes `data/<run_start_timestamp>/candidates_v7.csv` and uploads the run folder to Hugging Face unless `--no-upload` is passed.
 
 ## Submit
 
@@ -86,6 +88,22 @@ python notebooks/v6/train_v6_ranker.py --csv data/<run_start_timestamp>/candidat
 
 The trainer optimizes both outcome-weighted classification and within-turn pairwise ranking, which is the metric that matters when the agent chooses among legal candidates.
 
-## What v7 should add
+## What v7 does
 
-v7 should use replay/episode analysis and self-play rollouts to create stronger counterfactual labels before attempting full reinforcement learning.
+v7 adds a counterfactual dataset generator and an ensemble ranker trainer. Train it by running:
+
+[notebooks/v7/v7_training_policy.ipynb](<notebooks/v7/v7_training_policy.ipynb>)
+
+The notebook automatically uses the newest local `data/<run_start_timestamp>/candidates_v7.csv`, streams training logs live, and uploads artifacts to Hugging Face. If you prefer a shell command, it runs the same trainer as:
+
+```bash
+python notebooks/v7/train_v7_ranker.py --csv data/<run_start_timestamp>/candidates_v7.csv --upload
+```
+
+Then build a single-file submission:
+
+```bash
+python build_submission.py --weights notebooks/v7/exports/model_weights_v7.json --output models/v7_kaggle/main.py
+```
+
+The v7 model artifact is an ensemble of compact JSON MLP rankers; `main.py` can average ensemble members at runtime.
