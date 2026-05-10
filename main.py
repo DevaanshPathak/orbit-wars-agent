@@ -42,7 +42,7 @@ PROACTIVE_DEFENSE_HORIZON = 12
 USE_OPENING_PLANNER = True
 USE_SNIPES = True
 USE_RECAPTURE = True
-USE_STAGING = False
+USE_STAGING = True
 USE_CRASH_EXPLOITS = True
 USE_ENDGAME_SCORE_MODE = True
 USE_MODEL_SCORER = False
@@ -50,9 +50,9 @@ USE_DEEP_PLANNER = True
 SPECULATIVE_TIME_MARGIN = 0.14
 MODEL_BLEND = 0.22
 PLANNER_HORIZON = 32
-PLANNER_BEAM = 3
-PLANNER_TOP_CANDIDATES = 8
-PLANNER_MAX_PICKS = 3
+PLANNER_BEAM = 4
+PLANNER_TOP_CANDIDATES = 10
+PLANNER_MAX_PICKS = 4
 PLANNER_BUDGET = 0.055
 
 # Trained model artifacts must not be committed to GitHub. A local, gitignored
@@ -1490,8 +1490,8 @@ def _planner_projected_value(state, candidate, policy=None):
         if owner_at_eta not in (-1, state.player):
             value += 12.0
     elif candidate.kind == "comet":
-        value += target.production * min(remaining, 22.0) * 0.70
-        value -= candidate.eta * 0.35
+        value += target.production * min(remaining, 25.0) * 0.90
+        value -= candidate.eta * 0.20
 
     if policy is not None:
         value += policy["indirect_value"].get(target.id, 0.0) * min(remaining, 28.0) * 0.07
@@ -2137,9 +2137,9 @@ def _selection_threshold(state, candidate):
     if state.step < 70 and candidate.kind == "expand":
         return 6.0
     if candidate.kind == "attack":
-        return 18.0
+        return 15.0
     if candidate.kind == "comet":
-        return 8.0
+        return 6.0
     return 10.0
 
 

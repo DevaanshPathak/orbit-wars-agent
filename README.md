@@ -133,3 +133,19 @@ After training, build a gitignored submission file with:
 ```bash
 python build_submission.py --weights notebooks/v9/exports/model_weights_v9.json --output models/v9_kaggle/main.py
 ```
+
+## What v10 does
+
+v10 improves the heuristic core directly rather than adding more model training, targeting the 600-point gap to the leaderboard top that the ranker alone cannot close.
+
+Changes from v4/v9 baseline:
+- Staging re-enabled: rear planets consolidate ships to the nearest safe front planet as a last move each turn.
+- Deep planner widened: beam 3→4, max picks 3→4, top candidates 8→10.
+- Attack threshold lowered (18→15) and comet threshold lowered (8→6) for more aggressive play.
+- Comet projected value boosted (multiplier 0.70→0.90, cap 22→25 turns, ETA penalty 0.35→0.20).
+
+Submit v10 as pure heuristic first; model can be layered back in once the heuristic baseline is stronger:
+
+```bash
+kaggle competitions submit orbit-wars -f main.py -m "v10 aggressive heuristic"
+```

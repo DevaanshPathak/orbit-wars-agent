@@ -720,6 +720,7 @@ def train(args):
 
 
 def main():
+    load_dotenv()
     train(parse_args())
 
 

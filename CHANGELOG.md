@@ -1,5 +1,13 @@
 # Changelog
 
+## v10 - Aggressive Heuristic
+
+- Enabled staging (`USE_STAGING = True`): rear planets now consolidate ships to the nearest safe front planet as a last move each turn, reducing idle ships.
+- Widened deep planner beam from 3 → 4 beams, increased max picks from 3 → 4, and raised top-candidates per step from 8 → 10, giving the beam search broader multi-target coverage within the same time budget.
+- Lowered attack selection threshold from 18 → 15, making the agent more willing to commit to enemy-planet attacks.
+- Lowered comet selection threshold from 8 → 6, boosted comet projected value multiplier from 0.70 → 0.90 with extended cap (22 → 25 turns), and reduced comet ETA penalty (0.35 → 0.20) to prioritize contested comets more aggressively.
+- Fixed `train_v9_ranker.py` to call `load_dotenv()` at the start of `main()` so `HF_TOKEN` is loaded from `.env` even when `--csv` is provided and `find_training_csv()` is bypassed.
+
 ## v9 - Scaled Counterfactual Ensemble Ranker
 
 - Removed the experimental TPU SFT/GRPO v9 path after the v8 GRPO smoke submission underperformed the supervised v7 ranker.
