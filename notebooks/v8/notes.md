@@ -4,14 +4,14 @@ v8 is the first reinforcement-learning-oriented version. It keeps the current Or
 
 ## Files
 
-- `sft_training_policy.ipynb` downloads `candidates_v7.csv` from Hugging Face with `HF_TOKEN`, launches SFT training, and uploads artifacts to `devaanshpa/orbit-wars-agent/v7/sft`.
-- `grpo_training_policy.ipynb` downloads `candidates_v7.csv` and the SFT artifact from Hugging Face with `HF_TOKEN`, launches constrained GRPO-style policy improvement, and uploads artifacts to `devaanshpa/orbit-wars-agent/v7/grpo`.
-- `train_sft_policy.py` trains a listwise supervised candidate policy from candidate CSV groups.
-- `train_grpo_policy.py` starts from the SFT artifact and improves the policy with group-relative sampled candidate rewards.
+- `sft_training_policy.ipynb` is self-contained for Kaggle: it downloads `candidates_v7.csv` from Hugging Face with `HF_TOKEN`, trains SFT directly in notebook cells, uploads artifacts to `devaanshpa/orbit-wars-agent/v7/sft`, and displays saved metrics/graphs.
+- `grpo_training_policy.ipynb` is self-contained for Kaggle: it downloads `candidates_v7.csv` and the SFT artifact from Hugging Face with `HF_TOKEN`, trains constrained GRPO directly in notebook cells, uploads artifacts to `devaanshpa/orbit-wars-agent/v7/grpo`, and displays saved metrics/graphs.
+- `train_sft_policy.py` is an optional local CLI copy of the SFT trainer.
+- `train_grpo_policy.py` is an optional local CLI copy of the GRPO trainer.
 
 ## Artifact Rules
 
-Generated model artifacts, predictions, and graphs stay under `notebooks/v8/exports/`, which is gitignored. Do not commit trained weights or generated submissions.
+Generated model artifacts, predictions, and graphs stay under the notebook export folder, which is gitignored locally. On Kaggle the self-contained notebooks default to `/kaggle/working/v8_exports/...`. Do not commit trained weights or generated submissions.
 
 The current remote artifact folders intentionally use `v7/sft` and `v7/grpo` because that was the requested Hugging Face layout for this training cycle.
 
