@@ -110,12 +110,12 @@ The v7 model artifact is an ensemble of compact JSON MLP rankers; `main.py` can 
 
 ## What v8 does
 
-v8 is the constrained SFT + GRPO workbench. It keeps the heuristic candidate generator as the legal action space, then trains TPU-first notebooks to rank those candidates:
+v8 is the constrained SFT + GRPO workbench. It keeps the heuristic candidate generator as the legal action space, then trains Kaggle 2*T4/CUDA notebooks to rank those candidates:
 
 - SFT notebook: [notebooks/v8/sft_training_policy.ipynb](<notebooks/v8/sft_training_policy.ipynb>)
 - GRPO notebook: [notebooks/v8/grpo_training_policy.ipynb](<notebooks/v8/grpo_training_policy.ipynb>)
 
-Both notebooks ask for `HF_TOKEN`, use `torch_xla` on Kaggle TPU v5e-8, print every epoch, upload checkpoints every 30 epochs, and save final artifacts to Hugging Face under `v8/sft` and `v8/grpo`.
+Both notebooks ask for `HF_TOKEN`, use CUDA on Kaggle GPU T4 x2, print every epoch, upload checkpoints every 30 epochs, and save final artifacts to Hugging Face under `v8/sft` and `v8/grpo`.
 
 ## What v9 does
 

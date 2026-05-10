@@ -130,8 +130,8 @@ Rollout setup:
 - Pick a fixed batch of seeds, opponents, and sides.
 - For each environment setting, run a group of sampled policies from the same initial condition.
 - Group size target:
-  - 8 to 16 on TPU v5e-8 if environment rollout throughput supports it.
-  - 4 to 8 only for a fallback 2*T4 debugging run.
+  - 4 to 8 on Kaggle GPU T4 x2.
+  - 8 to 16 only for a later TPU experiment if environment rollout throughput supports it.
 - Sampling:
   - top-k or nucleus over legal candidates
   - temperature schedule from exploratory to conservative
@@ -177,23 +177,22 @@ Artifacts uploaded to `v8/grpo/`:
 
 ## Hardware Plan
 
-TPU v5e-8:
-
-- Default runtime for the v8 notebooks.
-- Best for larger SFT batches and high-throughput model updates.
-- Rollout speed may still be CPU-bound because Kaggle environment simulation is Python-heavy.
-- Use TPU mainly for training batches; keep environment workers on CPU.
-- Notebooks should set `PJRT_DEVICE=TPU`, require `torch_xla`, and use XLA optimizer steps.
-
 2*T4 GPU:
 
-- Fallback runtime only if TPU/XLA setup fails.
+- Default runtime for the v8 notebooks.
+- Easier setup for constrained SFT/GRPO than TPU/XLA.
 - Use larger gradient accumulation instead of very large batches.
+- Rollout speed may still be CPU-bound because Kaggle environment simulation is Python-heavy.
+
+TPU v5e-8:
+
+- Reserved for v9 and later scale-up experiments.
+- Best for larger fixed-shape SFT batches and high-throughput model updates after the v8 smoke path is stable.
 
 Recommendation:
 
-- Start SFT and GRPO on TPU v5e-8.
-- Fall back to 2*T4 only for debugging dependency or XLA issues.
+- Start SFT and GRPO on Kaggle GPU T4 x2.
+- Use v9 for TPU v5e-8 experiments.
 
 ## Distillation and Kaggle Export
 

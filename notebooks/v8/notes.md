@@ -4,8 +4,8 @@ v8 is the first reinforcement-learning-oriented version. It keeps the current Or
 
 ## Files
 
-- `sft_training_policy.ipynb` is self-contained for Kaggle TPU: it downloads `candidates_v7.csv` from Hugging Face with `HF_TOKEN`, trains SFT directly in notebook cells, logs every epoch, uploads checkpoints every 30 epochs to `devaanshpa/orbit-wars-agent/v8/sft/checkpoints`, uploads final artifacts to `v8/sft`, and displays saved metrics/graphs.
-- `grpo_training_policy.ipynb` is self-contained for Kaggle TPU: it downloads `candidates_v7.csv` and the SFT artifact from Hugging Face with `HF_TOKEN`, trains constrained GRPO directly in notebook cells, logs every epoch, uploads checkpoints every 30 epochs to `devaanshpa/orbit-wars-agent/v8/grpo/checkpoints`, uploads final artifacts to `v8/grpo`, and displays saved metrics/graphs.
+- `sft_training_policy.ipynb` is self-contained for Kaggle GPU T4 x2: it downloads `candidates_v7.csv` from Hugging Face with `HF_TOKEN`, trains SFT directly in notebook cells, logs every epoch, uploads checkpoints every 30 epochs to `devaanshpa/orbit-wars-agent/v8/sft/checkpoints`, uploads final artifacts to `v8/sft`, and displays saved metrics/graphs.
+- `grpo_training_policy.ipynb` is self-contained for Kaggle GPU T4 x2: it downloads `candidates_v7.csv` and the SFT artifact from Hugging Face with `HF_TOKEN`, trains constrained GRPO directly in notebook cells, logs every epoch, uploads checkpoints every 30 epochs to `devaanshpa/orbit-wars-agent/v8/grpo/checkpoints`, uploads final artifacts to `v8/grpo`, and displays saved metrics/graphs.
 - `train_sft_policy.py` is an optional local CLI copy of the SFT trainer.
 - `train_grpo_policy.py` is an optional local CLI copy of the GRPO trainer.
 
@@ -26,7 +26,7 @@ The current remote artifact folders are `v8/sft` and `v8/grpo`.
 
 ## Notebook Defaults
 
-The notebooks are set for a 1000-game both-sides dataset on Kaggle TPU v5e-8:
+The notebooks are set for a 1000-game both-sides dataset on Kaggle GPU T4 x2:
 
 - SFT: 180 epochs, 192 candidate groups per batch, 3 ensemble members, dropout 0.14, patience 28.
 - GRPO: 120 epochs, 160 candidate groups per batch, 10 samples per group, temperature 0.90, KL weight 0.065, supervised anchor 0.14, patience 24.

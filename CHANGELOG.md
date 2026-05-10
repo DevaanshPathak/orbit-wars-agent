@@ -17,8 +17,8 @@
 - Updated the GRPO path to download the SFT artifact from Hugging Face by default using `HF_TOKEN`, with local SFT JSON only as an explicit override.
 - Updated the SFT path to download the newest Hugging Face `data/*/candidates_v7.csv` by default using `HF_TOKEN`, with local CSV only as an explicit override.
 - Moved v8 Hugging Face uploads from the legacy `v7/sft` and `v7/grpo` experiment paths to `v8/sft` and `v8/grpo`.
-- Switched the v8 SFT and GRPO notebooks to TPU-first execution with `PJRT_DEVICE=TPU`, `V8_DEVICE=tpu`, `torch_xla` dependency checks, and XLA optimizer steps.
-- Set explicit v8 notebook training defaults for 1000-game both-sides datasets on Kaggle TPU v5e-8, including SFT epochs/ensemble/batch settings and GRPO KL/anchor/batch settings.
+- Switched v8 back to Kaggle 2*T4/CUDA defaults, with `V8_DEVICE=cuda` and no `torch_xla` requirement in the v8 notebooks.
+- Set explicit v8 notebook training defaults for 1000-game both-sides datasets on Kaggle 2*T4, including SFT epochs/ensemble/batch settings and GRPO KL/anchor/batch settings.
 - Made the self-contained v8 notebooks log every epoch and upload compact JSON checkpoints to Hugging Face every 30 epochs by default.
 
 ## v7 - Counterfactual Ensemble Ranker
