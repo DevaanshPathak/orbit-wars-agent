@@ -42,7 +42,7 @@ PROACTIVE_DEFENSE_HORIZON = 12
 USE_OPENING_PLANNER = True
 USE_SNIPES = True
 USE_RECAPTURE = True
-USE_STAGING = True
+USE_STAGING = False
 USE_CRASH_EXPLOITS = True
 USE_ENDGAME_SCORE_MODE = True
 USE_MODEL_SCORER = False
@@ -1014,6 +1014,16 @@ def _build_policy(state):
         reserve[planet.id] = min(int(planet.ships), max(0, int(keep)))
         attack_budget[planet.id] = max(0, int(planet.ships) - reserve[planet.id])
 
+    # Production-race escalation: if clearly losing production, free up reserved ships
+    if state.step > 100 and state.enemy_production > 0:
+        prod_ratio = state.my_production / state.enemy_production
+        if prod_ratio < 0.85:
+            draw_fraction = min(0.35, (0.85 - prod_ratio) * 2.0)
+            for pid in list(attack_budget.keys()):
+                freed = int(reserve[pid] * draw_fraction)
+                reserve[pid] = max(0, reserve[pid] - freed)
+                attack_budget[pid] += freed
+
     return {
         "reaction_time_map": reaction_time_map,
         "indirect_value": indirect_value,
@@ -1490,8 +1500,8 @@ def _planner_projected_value(state, candidate, policy=None):
         if owner_at_eta not in (-1, state.player):
             value += 12.0
     elif candidate.kind == "comet":
-        value += target.production * min(remaining, 25.0) * 0.90
-        value -= candidate.eta * 0.20
+        value += target.production * min(remaining, 22.0) * 0.70
+        value -= candidate.eta * 0.35
 
     if policy is not None:
         value += policy["indirect_value"].get(target.id, 0.0) * min(remaining, 28.0) * 0.07
@@ -1750,7 +1760,7 @@ def _generate_capture_candidates(
             if candidate is not None:
                 candidates.append(candidate)
 
-        if kind == "attack" and target.production >= 4 and state.step > OPENING_END_STEP:
+        if kind == "attack" and target.production >= 3 and state.step > OPENING_END_STEP:
             candidate = _build_multi_attack_candidate(
                 state,
                 target,
@@ -2137,9 +2147,9 @@ def _selection_threshold(state, candidate):
     if state.step < 70 and candidate.kind == "expand":
         return 6.0
     if candidate.kind == "attack":
-        return 15.0
+        return 18.0
     if candidate.kind == "comet":
-        return 6.0
+        return 8.0
     return 10.0
 
 

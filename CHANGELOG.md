@@ -1,5 +1,13 @@
 # Changelog
 
+## v11 - Reverted Heuristic + Production-Race + v7 Model
+
+- Reverted staging to `False` and all threshold/comet changes from v10 after v10 scored 912.9 (below v4's 934.9).
+- Kept v10's wider deep planner beam (4 beams, 4 max picks, 10 top candidates per step).
+- Added production-race escalation to `_build_policy`: when `my_production / enemy_production < 0.85` after step 100, draws down planet reserves proportionally (up to 35%) to free ships for attacks.
+- Lowered multi-source attack threshold from `production >= 4` to `production >= 3` so coordinated two-source attacks trigger on more enemy planets.
+- Re-blended v7 ensemble ranker (blend 0.22) on top of the reverted heuristic core via `build_submission.py`.
+
 ## v10 - Aggressive Heuristic
 
 - Enabled staging (`USE_STAGING = True`): rear planets now consolidate ships to the nearest safe front planet as a last move each turn, reducing idle ships.

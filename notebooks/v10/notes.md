@@ -47,3 +47,7 @@ Comets are temporary, contested, and produce ships — they should jump the queu
 ## Score Target
 
 Beat v7's 1017.1 public score. If staging or lower thresholds cause regression, revert and tune conservatively.
+
+## Result
+
+v10 scored **912.9** — regression from v4 (934.9). Staging and lower attack thresholds were net negative. v11 reverts those changes.
