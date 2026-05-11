@@ -919,6 +919,14 @@ class GameState:
             reserve = max(2, reserve // 2)
         if self.my_production < self.enemy_production and self.step > 150:
             reserve = max(1, reserve - planet.production)
+
+        # Gradual pre-endgame ramp: linearly release up to 55% of reserves
+        # over the 80 turns before ENDGAME_STEP so the transition isn't a cliff.
+        pre_endgame_start = ENDGAME_STEP - 80
+        if self.step > pre_endgame_start:
+            ramp = min(1.0, (self.step - pre_endgame_start) / 80.0)
+            reserve = max(1, int(reserve * (1.0 - ramp * 0.55)))
+
         return reserve
 
     def initial_available(self):
@@ -1010,7 +1018,7 @@ def _build_policy(state):
         keep = state.reserve_for(planet)
         enemy_eta, enemy_ships, _ = state.enemy_reach(planet)
         if enemy_eta <= PROACTIVE_DEFENSE_HORIZON:
-            keep = max(keep, int(enemy_ships * 0.18) + planet.production)
+            keep = max(keep, int(enemy_ships * 0.30) + planet.production)
         reserve[planet.id] = min(int(planet.ships), max(0, int(keep)))
         attack_budget[planet.id] = max(0, int(planet.ships) - reserve[planet.id])
 
@@ -1512,6 +1520,22 @@ def _planner_projected_value(state, candidate, policy=None):
         value += min(18.0, race_margin * 1.1)
     elif race_margin <= 2.0:
         value -= min(45.0, 12.0 + enemy_ships * 0.12)
+
+    # One-ply opponent response: penalize if committing ships from a source
+    # leaves it capturable by the enemy before our fleet even lands.
+    if candidate.kind in ("attack", "expand", "comet"):
+        for source_id, _angle, send in candidate.parts:
+            source = state.planet_by_id.get(source_id)
+            if source is None:
+                continue
+            src_enemy_eta, src_enemy_ships, _ = state.enemy_reach(source)
+            if src_enemy_eta >= 999.0 or src_enemy_eta >= candidate.eta:
+                continue
+            remaining = max(0, int(source.ships) - send)
+            garrison_at_arrival = remaining + source.production * int(src_enemy_eta)
+            if src_enemy_ships > garrison_at_arrival + CAPTURE_BUFFER:
+                exposed_turns = max(0.0, min(float(PLANNER_HORIZON), state.turns_left()))
+                value -= source.production * exposed_turns * 1.2
 
     value -= candidate.ships * 0.06
     return value
