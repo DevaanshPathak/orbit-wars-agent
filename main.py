@@ -42,7 +42,7 @@ PROACTIVE_DEFENSE_HORIZON = 12
 USE_OPENING_PLANNER = True
 USE_SNIPES = True
 USE_RECAPTURE = True
-USE_STAGING = False
+USE_STAGING = True
 USE_CRASH_EXPLOITS = True
 USE_ENDGAME_SCORE_MODE = True
 USE_MODEL_SCORER = False
@@ -50,7 +50,7 @@ USE_DEEP_PLANNER = True
 SPECULATIVE_TIME_MARGIN = 0.14
 MODEL_BLEND = 0.22
 PLANNER_HORIZON = 32
-PLANNER_BEAM = 4
+PLANNER_BEAM = 5
 PLANNER_TOP_CANDIDATES = 10
 PLANNER_MAX_PICKS = 4
 PLANNER_BUDGET = 0.055
@@ -1024,12 +1024,16 @@ def _build_policy(state):
 
     # Production-race aggression: losing the production race while sitting on ships is a slow
     # death — slash reserves and force an expansion race instead of passively defending.
+    # Only draw from planets not actively threatened so front-line defense isn't stripped.
     if state.step > 80 and state.enemy_production > 0:
         prod_ratio = state.my_production / state.enemy_production
         if prod_ratio < 0.92:
             # Steeper ramp: 0% at 0.92, up to 60% at ~0.72 and below
             draw_fraction = min(0.60, (0.92 - prod_ratio) * 3.0)
             for pid in list(attack_budget.keys()):
+                planet = state.planet_by_id.get(pid)
+                if planet is not None and state.enemy_reach(planet)[0] <= 20:
+                    continue  # keep reserve on planets under active threat
                 freed = int(reserve[pid] * draw_fraction)
                 reserve[pid] = max(1, reserve[pid] - freed)
                 attack_budget[pid] += freed
@@ -1166,6 +1170,10 @@ def _candidate_score(state, target, send, eta, kind, policy=None):
     score -= max(0.0, garrison - target.ships) * 0.12
     if policy is not None:
         score += policy["indirect_value"].get(target.id, 0.0) * turns * 0.08
+
+    # Opportunity bonus: enemy planet at low current garrison — exploit before it recovers
+    if kind == "attack" and owner not in (-1, state.player) and target.ships < target.production * 3.5:
+        score += target.production * 8.0
 
     enemy_eta, enemy_ships, _ = state.enemy_reach(target)
     race_margin = enemy_eta - eta
@@ -1566,7 +1574,8 @@ def _build_single_capture_candidate(
     angle, eta = intercept
     if eta > state.turns_left() - 1:
         return None
-    if kind == "comet" and eta > 18:
+    comet_eta_cap = 22 if state.my_production >= state.enemy_production else 18
+    if kind == "comet" and eta > comet_eta_cap:
         return None
 
     needed = state.min_ships_to_own_at(
@@ -2053,6 +2062,9 @@ def _generate_staging_candidates(state, available):
         p.id: _nearest_distance_to_set((p.x, p.y), objectives) for p in state.my_planets
     }
     front = min(safe_fronts, key=lambda p: (frontier_distance[p.id], -p.production))
+    # Don't stage to a front being actively contested — ships would just feed defense
+    if state.enemy_reach(front)[0] <= 15:
+        return []
     candidates = []
     for source in sorted(state.my_planets, key=lambda p: -frontier_distance[p.id]):
         if source.id == front.id or available.get(source.id, 0) < STAGING_MIN_SHIPS:

@@ -1,5 +1,14 @@
 # Changelog
 
+## v13 - Staging + Wider Beam + Safe Production-Race + Opportunity Scoring + Comet Extension
+
+- Re-enabled staging (`USE_STAGING = True`) with a safety guard: skips staging if the front planet's `enemy_reach` ETA ≤ 15 turns, preventing ships from being moved into contested planets. One staging move per turn consolidates idle rear-planet ships toward the nearest safe front.
+- Widened deep planner beam from 4 → 5 (`PLANNER_BEAM = 5`) for broader multi-target coverage.
+- Tightened production-race drawdown to only strip reserves from safe planets (`enemy_reach` ETA > 20), leaving front-line planet garrisons intact during the aggression phase.
+- Added opportunity scoring in `_candidate_score`: +`production * 8.0` bonus when an enemy planet has `ships < production * 3.5`, prioritizing recently weakened targets before their garrison recovers.
+- Extended comet ETA cap 18 → 22 turns when `my_production >= enemy_production` so farther comets are contested when we're leading.
+- Added `notebooks/v13/train_v13_ranker.py` and `notebooks/v13/v13_training_policy.ipynb` to train a fresh 8-member ensemble on the 5k-game `data/` dataset; cell 3 auto-discovers the newest HF dataset. Artifacts upload to `devaanshpa/orbit-wars-agent/v13`.
+
 ## v12 - Tighter Defense + Opponent Modeling + Production-Race Aggression + Retrained Ensemble
 
 - Tightened proactive defense in `_build_policy`: `enemy_ships * 0.18` → `enemy_ships * 0.30`, so nearby threats reserve more ships before committing to attacks.
