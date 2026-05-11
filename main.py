@@ -1022,14 +1022,16 @@ def _build_policy(state):
         reserve[planet.id] = min(int(planet.ships), max(0, int(keep)))
         attack_budget[planet.id] = max(0, int(planet.ships) - reserve[planet.id])
 
-    # Production-race escalation: if clearly losing production, free up reserved ships
-    if state.step > 100 and state.enemy_production > 0:
+    # Production-race aggression: losing the production race while sitting on ships is a slow
+    # death — slash reserves and force an expansion race instead of passively defending.
+    if state.step > 80 and state.enemy_production > 0:
         prod_ratio = state.my_production / state.enemy_production
-        if prod_ratio < 0.85:
-            draw_fraction = min(0.35, (0.85 - prod_ratio) * 2.0)
+        if prod_ratio < 0.92:
+            # Steeper ramp: 0% at 0.92, up to 60% at ~0.72 and below
+            draw_fraction = min(0.60, (0.92 - prod_ratio) * 3.0)
             for pid in list(attack_budget.keys()):
                 freed = int(reserve[pid] * draw_fraction)
-                reserve[pid] = max(0, reserve[pid] - freed)
+                reserve[pid] = max(1, reserve[pid] - freed)
                 attack_budget[pid] += freed
 
     return {

@@ -1,6 +1,6 @@
 # v12 Notes
 
-v12 builds on v11 (1051.1, new best) with three heuristic fixes and a fresh model trained on the 2500-game both-sides dataset already in `data/20260510_141652/`.
+v12 builds on v11 (1051.1, new best) with four heuristic fixes and a fresh model trained on the 2500-game both-sides dataset already in `data/20260510_141652/`.
 
 ## Files
 
@@ -17,6 +17,16 @@ v12 builds on v11 (1051.1, new best) with three heuristic fixes and a fresh mode
 
 ### One-ply opponent modeling
 `_planner_projected_value()` now checks each source planet in a candidate's parts: if the enemy can capture that planet before our fleet lands (garrison + production accrual < enemy fleet size), the candidate is penalized by `source.production * remaining_turns * 1.2`. This prevents attacks that overcommit ships and leave the source planet capturable.
+
+### Production-race aggression
+Strengthened the production-race escalation from v11:
+- Triggers earlier: step 80 (was 100)
+- Wider threshold: ratio < 0.92 (was 0.85) — any meaningful production deficit engages the mode
+- Steeper ramp: multiplier 3.0 (was 2.0)
+- Higher max drawdown: 60% (was 35%)
+- Floor: reserve[pid] kept ≥ 1 per planet
+
+At ratio 0.82 (10% behind): draws 30% of reserves into attack budget. At ratio 0.72 (20%+ behind): draws the full 60%. Losing the production race while sitting on ships is a slow death — this forces expansion over passive defense.
 
 ## Training Defaults
 

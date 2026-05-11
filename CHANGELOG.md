@@ -1,10 +1,11 @@
 # Changelog
 
-## v12 - Tighter Defense + Opponent Modeling + Retrained Ensemble
+## v12 - Tighter Defense + Opponent Modeling + Production-Race Aggression + Retrained Ensemble
 
 - Tightened proactive defense in `_build_policy`: `enemy_ships * 0.18` → `enemy_ships * 0.30`, so nearby threats reserve more ships before committing to attacks.
 - Added gradual pre-endgame reserve ramp in `reserve_for`: releases up to 55% of reserves linearly over the 80 turns before `ENDGAME_STEP` (steps 325–405) instead of dropping to zero abruptly.
 - Added one-ply opponent response modeling in `_planner_projected_value`: for each source planet in a candidate, if the enemy can capture it before the fleet lands, penalize by `source.production * remaining_turns * 1.2`.
+- Strengthened production-race aggression in `_build_policy`: triggers earlier (step 80, was 100), wider threshold (ratio < 0.92, was 0.85), steeper ramp (`* 3.0`, was `* 2.0`), higher max drawdown (60%, was 35%) — when losing the production race, slashes reserves and forces expansion rather than passive defense.
 - Added `notebooks/v12/train_v12_ranker.py` and `notebooks/v12/v12_training_policy.ipynb` to train a fresh 8-member ensemble on the 2500-game `data/20260510_141652/candidates_v7.csv` dataset; artifacts upload to `devaanshpa/orbit-wars-agent/v12`.
 
 ## v11 - Reverted Heuristic + Production-Race + v7 Model
