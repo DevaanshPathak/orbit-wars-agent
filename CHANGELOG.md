@@ -1,5 +1,10 @@
 # Changelog
 
+## v14 - v13 Heuristic + Retrained Ensemble on 5k-Game Dataset
+
+- Trains a fresh 8-member ensemble ranker on top of the v13 heuristic using the 5k-game both-sides dataset.
+- Added `notebooks/v14/train_v14_ranker.py` and `notebooks/v14/v14_training_policy.ipynb`; cell 3 auto-discovers the newest HF `data/*/candidates_v7.csv`. Artifacts upload to `devaanshpa/orbit-wars-agent/v14`.
+
 ## v13 - Staging + Wider Beam + Safe Production-Race + Opportunity Scoring + Comet Extension
 
 - Re-enabled staging (`USE_STAGING = True`) with a safety guard: skips staging if the front planet's `enemy_reach` ETA ≤ 15 turns, preventing ships from being moved into contested planets. One staging move per turn consolidates idle rear-planet ships toward the nearest safe front.
@@ -7,7 +12,7 @@
 - Tightened production-race drawdown to only strip reserves from safe planets (`enemy_reach` ETA > 20), leaving front-line planet garrisons intact during the aggression phase.
 - Added opportunity scoring in `_candidate_score`: +`production * 8.0` bonus when an enemy planet has `ships < production * 3.5`, prioritizing recently weakened targets before their garrison recovers.
 - Extended comet ETA cap 18 → 22 turns when `my_production >= enemy_production` so farther comets are contested when we're leading.
-- Added `notebooks/v13/train_v13_ranker.py` and `notebooks/v13/v13_training_policy.ipynb` to train a fresh 8-member ensemble on the 5k-game `data/` dataset; cell 3 auto-discovers the newest HF dataset. Artifacts upload to `devaanshpa/orbit-wars-agent/v13`.
+- Pure heuristic submission — no model trained. Training notebook for this heuristic is in `notebooks/v14/` (promoted to v14 to keep version numbers aligned with submissions).
 
 ## v12 - Tighter Defense + Opponent Modeling + Production-Race Aggression + Retrained Ensemble
 

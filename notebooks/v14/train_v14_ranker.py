@@ -11,7 +11,7 @@ from pathlib import Path
 
 HF_REPO_ID = "devaanshpa/orbit-wars-agent"
 HF_REPO_TYPE = "model"
-HF_REMOTE_PREFIX = "v13"
+HF_REMOTE_PREFIX = "v14"
 
 METADATA_COLS = {
     "label",
@@ -41,26 +41,26 @@ METADATA_COLS = {
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Train the v13 Orbit Wars supervised ensemble ranker.")
+    parser = argparse.ArgumentParser(description="Train the v14 Orbit Wars supervised ensemble ranker.")
     parser.add_argument("--csv", default=os.environ.get("CANDIDATES_CSV", ""))
     parser.add_argument(
         "--prefer-local-data",
         action="store_true",
         help="Use newest local data/*/candidates_v7.csv before Hugging Face. Default is to prefer Hugging Face.",
     )
-    parser.add_argument("--export-dir", default="notebooks/v13/exports")
-    parser.add_argument("--epochs", type=int, default=int(os.environ.get("V13_EPOCHS", "280")))
-    parser.add_argument("--batch-size", type=int, default=int(os.environ.get("V13_BATCH_SIZE", "4096")))
-    parser.add_argument("--lr", type=float, default=float(os.environ.get("V13_LR", "0.00045")))
-    parser.add_argument("--weight-decay", type=float, default=float(os.environ.get("V13_WEIGHT_DECAY", "0.00030")))
-    parser.add_argument("--pair-loss-weight", type=float, default=float(os.environ.get("V13_PAIR_LOSS_WEIGHT", "1.05")))
-    parser.add_argument("--max-pairs-per-turn", type=int, default=int(os.environ.get("V13_MAX_PAIRS_PER_TURN", "12")))
-    parser.add_argument("--ensemble-size", type=int, default=int(os.environ.get("V13_ENSEMBLE_SIZE", "8")))
-    parser.add_argument("--patience", type=int, default=int(os.environ.get("V13_PATIENCE", "36")))
-    parser.add_argument("--dropout", type=float, default=float(os.environ.get("V13_DROPOUT", "0.13")))
-    parser.add_argument("--score-scale", type=float, default=float(os.environ.get("V13_SCORE_SCALE", "205.0")))
-    parser.add_argument("--seed", type=int, default=int(os.environ.get("V13_SEED", "907")))
-    parser.add_argument("--checkpoint-every", type=int, default=int(os.environ.get("V13_CHECKPOINT_EVERY", "40")))
+    parser.add_argument("--export-dir", default="notebooks/v14/exports")
+    parser.add_argument("--epochs", type=int, default=int(os.environ.get("V14_EPOCHS", "280")))
+    parser.add_argument("--batch-size", type=int, default=int(os.environ.get("V14_BATCH_SIZE", "4096")))
+    parser.add_argument("--lr", type=float, default=float(os.environ.get("V14_LR", "0.00045")))
+    parser.add_argument("--weight-decay", type=float, default=float(os.environ.get("V14_WEIGHT_DECAY", "0.00030")))
+    parser.add_argument("--pair-loss-weight", type=float, default=float(os.environ.get("V14_PAIR_LOSS_WEIGHT", "1.05")))
+    parser.add_argument("--max-pairs-per-turn", type=int, default=int(os.environ.get("V14_MAX_PAIRS_PER_TURN", "12")))
+    parser.add_argument("--ensemble-size", type=int, default=int(os.environ.get("V14_ENSEMBLE_SIZE", "8")))
+    parser.add_argument("--patience", type=int, default=int(os.environ.get("V14_PATIENCE", "36")))
+    parser.add_argument("--dropout", type=float, default=float(os.environ.get("V14_DROPOUT", "0.13")))
+    parser.add_argument("--score-scale", type=float, default=float(os.environ.get("V14_SCORE_SCALE", "205.0")))
+    parser.add_argument("--seed", type=int, default=int(os.environ.get("V14_SEED", "907")))
+    parser.add_argument("--checkpoint-every", type=int, default=int(os.environ.get("V14_CHECKPOINT_EVERY", "40")))
     parser.add_argument("--upload", action="store_true")
     parser.add_argument("--hf-repo-id", default=HF_REPO_ID)
     parser.add_argument("--hf-repo-type", default=HF_REPO_TYPE)
@@ -89,7 +89,7 @@ def find_training_csv(csv_arg, prefer_local=False):
             raise FileNotFoundError(f"Training CSV does not exist: {path}")
         return path
 
-    fixed = Path("notebooks/v13/data/candidates_v7.csv")
+    fixed = Path("notebooks/v14/data/candidates_v7.csv")
     if prefer_local and fixed.exists():
         return fixed
 
@@ -286,7 +286,7 @@ def save_member_checkpoint(model, best_state, nn, args, member_seed, epoch, best
     finally:
         model.load_state_dict(saved_state)
     payload = {
-        "version": "v13",
+        "version": "v14",
         "model_type": "mlp_relu_candidate_ranker",
         "features": checkpoint_context["feature_names"],
         "mean": dict(zip(checkpoint_context["feature_names"], checkpoint_context["means"])),
@@ -302,7 +302,7 @@ def save_member_checkpoint(model, best_state, nn, args, member_seed, epoch, best
     checkpoint_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     api = checkpoint_context.get("api")
     if api is None:
-        print(f"Saved local v13 checkpoint {checkpoint_path}", flush=True)
+        print(f"Saved local v14 checkpoint {checkpoint_path}", flush=True)
         return checkpoint_path
     remote_path = f"{HF_REMOTE_PREFIX}/checkpoints/{checkpoint_path.name}"
     try:
@@ -311,11 +311,11 @@ def save_member_checkpoint(model, best_state, nn, args, member_seed, epoch, best
             path_in_repo=remote_path,
             repo_id=checkpoint_context["hf_repo_id"],
             repo_type=checkpoint_context["hf_repo_type"],
-            commit_message=f"Upload v13 checkpoint member_seed={member_seed} epoch={epoch}",
+            commit_message=f"Upload v14 checkpoint member_seed={member_seed} epoch={epoch}",
         )
-        print(f"Uploaded v13 checkpoint to {remote_path}", flush=True)
+        print(f"Uploaded v14 checkpoint to {remote_path}", flush=True)
     except Exception as exc:
-        print(f"Failed to upload v13 checkpoint {checkpoint_path.name}: {exc}", flush=True)
+        print(f"Failed to upload v14 checkpoint {checkpoint_path.name}: {exc}", flush=True)
     return checkpoint_path
 
 
@@ -481,7 +481,7 @@ def train(args):
         from torch import nn
         import torch.nn.functional as functional
     except ModuleNotFoundError as exc:
-        raise RuntimeError("PyTorch is required for v13 training. Install torch or run on Kaggle/Colab.") from exc
+        raise RuntimeError("PyTorch is required for v14 training. Install torch or run on Kaggle/Colab.") from exc
 
     random.seed(args.seed)
     data_path = find_training_csv(args.csv, getattr(args, "prefer_local_data", False))
@@ -581,7 +581,7 @@ def train(args):
         histories.append({"seed": member_seed, "history": history, "best_validation_objective": best_objective})
         members.append(
             {
-                "version": "v13",
+                "version": "v14",
                 "model_type": "mlp_relu_candidate_ranker",
                 "features": feature_names,
                 "mean": dict(zip(feature_names, means)),
@@ -648,7 +648,7 @@ def train(args):
     }
 
     artifact = {
-        "version": "v13",
+        "version": "v14",
         "created_at": int(time.time()),
         "source_csv": str(data_path),
         "model_type": "ensemble_mlp_relu_candidate_ranker",
@@ -657,11 +657,11 @@ def train(args):
         "metrics": metrics,
     }
 
-    (export_dir / "model_weights_v13.json").write_text(json.dumps(artifact, indent=2, sort_keys=True), encoding="utf-8")
-    (export_dir / "feature_schema_v13.json").write_text(json.dumps({"features": feature_names}, indent=2), encoding="utf-8")
-    (export_dir / "metrics_v13.json").write_text(json.dumps(metrics, indent=2, sort_keys=True), encoding="utf-8")
-    (export_dir / "training_history_v13.json").write_text(json.dumps(histories, indent=2, sort_keys=True), encoding="utf-8")
-    with (export_dir / "predictions_v13.csv").open("w", newline="", encoding="utf-8") as f:
+    (export_dir / "model_weights_v14.json").write_text(json.dumps(artifact, indent=2, sort_keys=True), encoding="utf-8")
+    (export_dir / "feature_schema_v14.json").write_text(json.dumps({"features": feature_names}, indent=2), encoding="utf-8")
+    (export_dir / "metrics_v14.json").write_text(json.dumps(metrics, indent=2, sort_keys=True), encoding="utf-8")
+    (export_dir / "training_history_v14.json").write_text(json.dumps(histories, indent=2, sort_keys=True), encoding="utf-8")
+    with (export_dir / "predictions_v14.csv").open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["row_index", "label", "prediction", "selected", "counterfactual_positive", "game_result", "split"])
         valid_set = set(valid_indices)
@@ -686,10 +686,10 @@ def train(args):
         plt.plot(epochs, [item["valid_objective"] for item in first_history], label="validation objective")
         plt.xlabel("epoch")
         plt.ylabel("loss")
-        plt.title("v13 first member validation loss")
+        plt.title("v14 first member validation loss")
         plt.legend()
         plt.tight_layout()
-        plt.savefig(graph_dir / "loss_curve_v13.png", dpi=150)
+        plt.savefig(graph_dir / "loss_curve_v14.png", dpi=150)
         plt.close()
 
         plt.figure(figsize=(7, 4))
@@ -697,16 +697,16 @@ def train(args):
         plt.hist([pred for pred, label in zip(all_probs, y) if label < 0.5], bins=30, alpha=0.65, label="negative")
         plt.xlabel("prediction")
         plt.ylabel("rows")
-        plt.title("v13 ensemble prediction distribution")
+        plt.title("v14 ensemble prediction distribution")
         plt.legend()
         plt.tight_layout()
-        plt.savefig(graph_dir / "prediction_histogram_v13.png", dpi=150)
+        plt.savefig(graph_dir / "prediction_histogram_v14.png", dpi=150)
         plt.close()
     except ModuleNotFoundError:
         print("matplotlib is not installed; skipped graph generation.", flush=True)
 
     print(json.dumps(metrics, indent=2, sort_keys=True), flush=True)
-    print(f"Saved v13 model artifact: {export_dir / 'model_weights_v13.json'}", flush=True)
+    print(f"Saved v14 model artifact: {export_dir / 'model_weights_v14.json'}", flush=True)
 
     if args.upload and hf_api is not None:
         hf_api.upload_folder(
@@ -714,7 +714,7 @@ def train(args):
             repo_id=args.hf_repo_id,
             repo_type=args.hf_repo_type,
             path_in_repo=HF_REMOTE_PREFIX,
-            commit_message="Upload v13 Orbit Wars supervised ensemble ranker artifacts and graphs",
+            commit_message="Upload v14 Orbit Wars supervised ensemble ranker artifacts and graphs",
         )
         print(f"Uploaded {export_dir} to https://huggingface.co/{args.hf_repo_id}/tree/main/{HF_REMOTE_PREFIX}", flush=True)
 
