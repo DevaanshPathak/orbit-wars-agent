@@ -20,6 +20,7 @@ HF_REPO_ID = "devaanshpa/orbit-wars-agent"
 HF_REPO_TYPE = "model"
 VERSION = "v7_counterfactual_teacher"
 CSV_BASENAME = "candidates_v7.csv"
+PROGRESS_BASENAME = "progress.txt"
 
 make = None
 Planet = None
@@ -958,6 +959,23 @@ def upload_to_hf(run_dir, run_start_timestamp, repo_id, repo_type):
     return remote_path
 
 
+def load_progress(run_dir):
+    path = Path(run_dir) / PROGRESS_BASENAME
+    if not path.exists():
+        return set()
+    completed = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line:
+            completed.add(line)
+    return completed
+
+
+def save_progress(run_dir, game_id):
+    with (Path(run_dir) / PROGRESS_BASENAME).open("a", encoding="utf-8") as f:
+        f.write(game_id + "\n")
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Generate Orbit Wars v7 counterfactual candidate training data.")
     parser.add_argument("--games", type=int, default=500)
@@ -993,6 +1011,11 @@ def parse_args():
     parser.add_argument("--no-upload", action="store_true")
     parser.add_argument("--no-deep-planner", action="store_true")
     parser.add_argument("--show-env-imports", action="store_true")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume a previous run. Requires --run-start-timestamp pointing to an existing run directory. Appends to the existing CSV and skips already-completed games.",
+    )
     return parser.parse_args()
 
 
@@ -1010,6 +1033,14 @@ def main_cli():
     run_dir.mkdir(parents=True, exist_ok=True)
     csv_path = run_dir / CSV_BASENAME
 
+    completed_game_ids = set()
+    if args.resume:
+        completed_game_ids = load_progress(run_dir)
+        if completed_game_ids:
+            print(f"Resuming: {len(completed_game_ids)} games already done, will skip them.", flush=True)
+        elif not csv_path.exists():
+            print("Warning: --resume specified but no progress file found; starting fresh.", flush=True)
+
     started_at = time.time()
     total_tasks = args.games * (2 if args.both_sides else 1)
     rows_written = 0
@@ -1018,11 +1049,16 @@ def main_cli():
     turns_logged = 0
     games_run = 0
     failure_totals = defaultdict(int)
-    with csv_path.open("w", newline="", encoding="utf-8") as f:
+    csv_mode = "a" if (args.resume and completed_game_ids) else "w"
+    with csv_path.open(csv_mode, newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
-        writer.writeheader()
+        if csv_mode == "w":
+            writer.writeheader()
         if args.workers == 1:
             tasks = list(iter_tasks(args))
+            if completed_game_ids:
+                tasks = [t for t in tasks if f"seed_{t[0]}_p{t[2]}_vs_{t[1]}" not in completed_game_ids]
+            total_tasks = len(tasks)
             print(
                 f"starting workers=1 tasks={len(tasks)} "
                 f"max_rows={args.max_rows or 'unlimited'}",
@@ -1038,6 +1074,7 @@ def main_cli():
                 for row in rows_to_write:
                     writer.writerow({field: row.get(field, "") for field in CSV_FIELDS})
                 f.flush()
+                save_progress(run_dir, game_result["game_id"])
                 games_run += 1
                 rows_written += len(rows_to_write)
                 positive_rows += sum(
@@ -1062,6 +1099,9 @@ def main_cli():
                     )
         else:
             tasks = list(iter_tasks(args))
+            if completed_game_ids:
+                tasks = [t for t in tasks if f"seed_{t[0]}_p{t[2]}_vs_{t[1]}" not in completed_game_ids]
+            total_tasks = len(tasks)
             print(
                 f"starting workers={args.workers} tasks={len(tasks)} "
                 f"max_rows={args.max_rows or 'unlimited'}",
@@ -1079,6 +1119,7 @@ def main_cli():
                     for row in rows_to_write:
                         writer.writerow({field: row.get(field, "") for field in CSV_FIELDS})
                     f.flush()
+                    save_progress(run_dir, result["game_id"])
                     games_run += 1
                     rows_written += len(rows_to_write)
                     positive_rows += sum(
