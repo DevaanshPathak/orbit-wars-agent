@@ -53,7 +53,7 @@ PLANNER_HORIZON = 32
 PLANNER_BEAM = 5
 PLANNER_TOP_CANDIDATES = 10
 PLANNER_MAX_PICKS = 4
-PLANNER_BUDGET = 0.055
+PLANNER_BUDGET = 0.065
 
 # Trained model artifacts must not be committed to GitHub. A local, gitignored
 # submission build may replace this with the JSON exported by the v5/v6 notebook.
@@ -1019,6 +1019,8 @@ def _build_policy(state):
         enemy_eta, enemy_ships, _ = state.enemy_reach(planet)
         if enemy_eta <= PROACTIVE_DEFENSE_HORIZON:
             keep = max(keep, int(enemy_ships * 0.30) + planet.production)
+        elif enemy_eta <= 20:
+            keep = max(keep, int(enemy_ships * 0.15))
         reserve[planet.id] = min(int(planet.ships), max(0, int(keep)))
         attack_budget[planet.id] = max(0, int(planet.ships) - reserve[planet.id])
 
@@ -1182,8 +1184,12 @@ def _candidate_score(state, target, send, eta, kind, policy=None):
             score -= 90.0 + target.production * 14.0
         elif race_margin <= 3.0:
             score -= 35.0 + enemy_ships * 0.18
-        elif race_margin >= 9.0 and state.step < 180:
-            score += target.production * 6.0
+        else:
+            # Winning the race denies enemy production over the lead window.
+            denied_turns = min(race_margin, 35.0)
+            score += target.production * denied_turns * 0.28
+            if race_margin >= 9.0 and state.step < 180:
+                score += target.production * 6.0
     elif owner not in (-1, state.player):
         if race_margin <= 4.0:
             score -= min(70.0, enemy_ships * 0.35 + 20.0)
@@ -2064,6 +2070,9 @@ def _generate_staging_candidates(state, available):
     front = min(safe_fronts, key=lambda p: (frontier_distance[p.id], -p.production))
     # Don't stage to a front being actively contested — ships would just feed defense
     if state.enemy_reach(front)[0] <= 15:
+        return []
+    # Skip if ledger predicts loss (in-flight fleets are not covered by enemy_reach).
+    if state.ledger.first_not_owned_turn(front.id, state.player, 18) is not None:
         return []
     candidates = []
     for source in sorted(state.my_planets, key=lambda p: -frontier_distance[p.id]):

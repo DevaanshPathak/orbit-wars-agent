@@ -1,5 +1,13 @@
 # Changelog
 
+## v15 - Targeted Heuristic Fixes + Opening Pair Weighting
+
+- Increased deep planner budget to 0.065 to match the 5-beam search width.
+- Added a medium-range defense reserve bump in `_build_policy` for enemy ETA <= 20.
+- Added a neutral race denial bonus in `_candidate_score` based on lead duration.
+- Added a ledger-aware staging guard to avoid staging into fronts predicted to fall within 18 turns.
+- Added `notebooks/v15/train_v15_ranker.py` with 1.5x opening-phase pair weighting.
+
 ## v14 - v13 Heuristic + Retrained Ensemble on 5k-Game Dataset
 
 - Trains a fresh 8-member ensemble ranker on top of the v13 heuristic using the 5k-game both-sides dataset.

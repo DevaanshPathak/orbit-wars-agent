@@ -149,3 +149,30 @@ Submit v10 as pure heuristic first; model can be layered back in once the heuris
 ```bash
 kaggle competitions submit orbit-wars -f main.py -m "v10 aggressive heuristic"
 ```
+
+## What v15 does
+
+v15 keeps the v13/v14 heuristic core and adds targeted fixes that address known failure modes:
+
+- Planner budget raised to 0.065 so the 5-beam deep planner is not starved.
+- Medium-range threat reserves: add a 15% reserve boost for enemy ETA <= 20 turns.
+- Neutral race denial bonus: winning a neutral race adds a conservative production-denial value.
+- Ledger-aware staging guard: skip staging to fronts predicted to fall within 18 turns.
+
+Training updates:
+
+- Regenerate data from the v13 heuristic (avoid stale-policy training).
+- Opening-phase pairs are weighted 1.5x in the v15 pair builder.
+
+Generate fresh data and train the v15 ranker:
+
+```bash
+python generate_training_data.py --games 5000 --both-sides --workers 16 --max-candidates-per-turn 64
+python notebooks/v15/train_v15_ranker.py --upload
+```
+
+Then build a submission from the exported weights:
+
+```bash
+python build_submission.py --weights notebooks/v15/exports/model_weights_v15.json --output models/v15_kaggle/main.py
+```
