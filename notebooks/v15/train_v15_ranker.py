@@ -12,6 +12,7 @@ from pathlib import Path
 HF_REPO_ID = "devaanshpa/orbit-wars-agent"
 HF_REPO_TYPE = "model"
 HF_REMOTE_PREFIX = "v15"
+PINNED_DATASET = "data/20260516_032302/candidates_v7.csv"
 
 METADATA_COLS = {
     "label",
@@ -111,16 +112,8 @@ def find_training_csv(csv_arg, prefer_local=False):
     except ModuleNotFoundError as exc:
         raise RuntimeError("Install huggingface_hub to download data: pip install huggingface_hub") from exc
 
-    api = HfApi(token=token)
-    files = api.list_repo_files(repo_id=HF_REPO_ID, repo_type=HF_REPO_TYPE)
-    remote_csvs = sorted(
-        [name for name in files if name.startswith("data/") and name.endswith("/candidates_v7.csv")],
-        reverse=True,
-    )
-    if not remote_csvs:
-        raise FileNotFoundError("No candidates_v7.csv found locally or in Hugging Face data folders.")
     return Path(
-        hf_hub_download(repo_id=HF_REPO_ID, repo_type=HF_REPO_TYPE, filename=remote_csvs[0], token=token)
+        hf_hub_download(repo_id=HF_REPO_ID, repo_type=HF_REPO_TYPE, filename=PINNED_DATASET, token=token)
     )
 
 

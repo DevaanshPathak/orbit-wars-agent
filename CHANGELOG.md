@@ -1,12 +1,10 @@
 # Changelog
 
-## v15 - Targeted Heuristic Fixes + Opening Pair Weighting
+## v15 - v13 Heuristic + Retrained Ensemble on Pinned 5k-Game Dataset (20260516_032302)
 
-- Increased deep planner budget to 0.065 to match the 5-beam search width.
-- Added a medium-range defense reserve bump in `_build_policy` for enemy ETA <= 20.
-- Added a neutral race denial bonus in `_candidate_score` based on lead duration.
-- Added a ledger-aware staging guard to avoid staging into fronts predicted to fall within 18 turns.
-- Added `notebooks/v15/train_v15_ranker.py` with 1.5x opening-phase pair weighting.
+- Trains a fresh 8-member ensemble ranker on top of the v13 heuristic using the pinned `data/20260516_032302` dataset (5k games × 2 sides = 10k game-plays, 608k rows, generated 2026-05-16).
+- Added `notebooks/v15/train_v15_ranker.py` and `notebooks/v15/v15_training_policy.ipynb`; cell 3 fetches the **pinned** `data/20260516_032302/candidates_v7.csv` from HF directly (no auto-discovery). Artifacts upload to `devaanshpa/orbit-wars-agent/v15`.
+- Added pause/resume support to `generate_training_data.py`: each completed game is appended to `progress.txt`; `--resume --run-start-timestamp <folder>` skips already-done games and appends to the existing CSV.
 
 ## v14 - v13 Heuristic + Retrained Ensemble on 5k-Game Dataset
 
