@@ -21,7 +21,7 @@ OPENING_END_STEP = 80
 ENDGAME_STEP = 405
 EVACUATE_HORIZON = 14
 
-OPENING_PLANNER_LIMIT = 50
+OPENING_PLANNER_LIMIT = 60
 OPENING_PLANNER_BUDGET = 0.18
 OPENING_PLAN_DEPTH_ONE = 4
 OPENING_PLAN_DEPTH_FEW = 3
@@ -29,7 +29,7 @@ OPENING_PLAN_DEPTH_MANY = 2
 OPENING_PLAN_BEAM = 5
 OPENING_PLAN_TARGETS = 10
 OPENING_PLAN_WAIT = 12
-OPENING_PLAN_MAX_MY_PLANETS = 5
+OPENING_PLAN_MAX_MY_PLANETS = 6
 OPENING_PLAN_DEFENSE_GATE = 15
 
 SNIPE_HORIZON = 55
@@ -1048,7 +1048,7 @@ def _build_policy(state):
     # Production-race aggression: losing the production race while sitting on ships is a slow
     # death — slash reserves and force an expansion race instead of passively defending.
     # Only draw from planets not actively threatened so front-line defense isn't stripped.
-    if state.step > 80 and state.enemy_production > 0:
+    if state.step > 70 and state.enemy_production > 0:
         prod_ratio = state.my_production / state.enemy_production
         if prod_ratio < 0.92:
             # Steeper ramp: 0% at 0.92, up to 60% at ~0.72 and below
@@ -1208,10 +1208,28 @@ def _candidate_score(state, target, send, eta, kind, policy=None):
     if kind == "attack" and owner not in (-1, state.player) and target.ships < target.production * 3.5:
         score += target.production * 8.0
 
+    # Hot-recapture: just-captured planet (garrison ≤ 2) is nearly free to retake
+    if kind == "attack" and owner not in (-1, state.player) and target.ships <= 2:
+        score += target.production * 18.0 + 35.0
+
     departure_pressure = policy.get("departure_pressure", {}) if policy else {}
     if kind == "attack" and departure_pressure.get(target.id, 0) > 0:
         departed = departure_pressure[target.id]
         score += min(departed * 0.35, target.production * 14.0)
+
+    # Back-line attack: when leading production by 20%+, bonus isolated enemy planets
+    if kind == "attack" and owner not in (-1, state.player) and state.step > 100:
+        if state.my_production > state.enemy_production * 1.20:
+            nearest_support = min(
+                (dist((target.x, target.y), (p.x, p.y)) for p in state.enemy_planets if p.id != target.id),
+                default=0.0,
+            )
+            if nearest_support > 35:
+                score += target.production * 5.0 + nearest_support * 0.08
+
+    # Adaptive comet density: reward closer high-production comets
+    if kind == "comet":
+        score += target.production * max(0.0, 20.0 - eta) * 0.30
 
     enemy_eta, enemy_ships, _ = state.enemy_reach(target)
     race_margin = enemy_eta - eta
@@ -1595,6 +1613,26 @@ def _planner_projected_value(state, candidate, policy=None):
                 value -= source.production * exposed_turns * 1.2
 
     value -= candidate.ships * 0.06
+
+    # Two-ply chain: estimate value of best planet reachable from target after capture
+    if candidate.kind in ("expand", "attack") and remaining > 8 and state.step < 330:
+        best_chain = 0.0
+        for p2 in state.planets:
+            if p2.owner == state.player or p2.id == target.id or p2.id in state.comet_ids:
+                continue
+            d = dist((target.x, target.y), (p2.x, p2.y))
+            if d > 75:
+                continue
+            hop_eta = d / max(3.5, compute_fleet_speed(20))
+            hop_remaining = max(0.0, remaining - hop_eta)
+            if hop_remaining < 2:
+                continue
+            chain_val = p2.production * hop_remaining * (1.25 if p2.owner != -1 else 0.80)
+            chain_val -= p2.ships * 0.14 + hop_eta * 0.25
+            if chain_val > best_chain:
+                best_chain = chain_val
+        value += best_chain * 0.20
+
     return value
 
 
@@ -1733,14 +1771,22 @@ def _build_multi_attack_candidate(state, target, available, planned_commitments=
         if race_buffer >= 10**6:
             continue
         needed += race_buffer
+        # Allocate ships ETA-ordered: early arrivers contribute more so late arrivers
+        # don't send unneeded ships to a planet already captured by the first wave.
         parts = []
         committed = 0
-        for source, part in sorted(aligned, key=lambda item: item[1][2], reverse=True):
-            remaining = needed - committed
-            if remaining <= 0:
+        running_cover = 0
+        for source, part in sorted(aligned, key=lambda item: item[1][3]):  # sort by eta asc
+            deficit = needed - committed
+            if deficit <= 0:
                 break
-            source_id, angle, max_aligned_send, _ = part
-            send = min(max_aligned_send, remaining)
+            source_id, angle, max_aligned_send, part_eta = part
+            # Discount contribution from sources arriving after an earlier wave may have
+            # already taken the planet — cap at remaining deficit plus small buffer.
+            if running_cover >= needed * 0.7:
+                send = min(max_aligned_send, max(2, deficit))
+            else:
+                send = min(max_aligned_send, deficit)
             if send <= 0 or available.get(source.id, 0) < send:
                 continue
             if send != max_aligned_send:
@@ -1750,6 +1796,7 @@ def _build_multi_attack_candidate(state, target, available, planned_commitments=
                 source_id, angle, send, _ = trimmed
             parts.append((source_id, angle, send))
             committed += send
+            running_cover += send
 
         if committed < needed:
             continue
@@ -2267,9 +2314,9 @@ def _opening_target_pool(state, policy):
         if state.is_static(target):
             value += target.production * 10.0 + 12.0
         else:
-            value -= 10.0
+            value -= 5.0
             if target.production <= 2:
-                value -= 10.0
+                value -= 6.0
         if target.owner != -1:
             value += target.production * 12.0 + target.ships * 0.25
         if enemy_t < my_t - 1.0:
