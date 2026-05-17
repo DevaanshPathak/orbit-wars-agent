@@ -989,6 +989,27 @@ def _nearest_distance_to_set(point, planets):
     return min(dist(point, (planet.x, planet.y)) for planet in planets)
 
 
+def _enemy_departure_pressure(state):
+    """For each enemy planet id, sum ships from enemy fleets that recently departed."""
+    pressure = {}
+    for fleet in state.fleets:
+        if fleet.owner in (-1, state.player):
+            continue
+        fleet_pos = (fleet.x, fleet.y)
+        fleet_speed = compute_fleet_speed(fleet.ships)
+        for planet in state.enemy_planets:
+            d = dist(fleet_pos, (planet.x, planet.y))
+            if d > fleet_speed * 4:
+                continue
+            # Positive dot product = fleet moving away from planet = recently departed
+            dx = fleet.x - planet.x
+            dy = fleet.y - planet.y
+            if dx * math.cos(fleet.angle) + dy * math.sin(fleet.angle) > 0:
+                pressure[planet.id] = pressure.get(planet.id, 0) + fleet.ships
+                break
+    return pressure
+
+
 def _build_policy(state):
     reaction_time_map = {}
     indirect_value = {}
@@ -1040,11 +1061,21 @@ def _build_policy(state):
                 reserve[pid] = max(1, reserve[pid] - freed)
                 attack_budget[pid] += freed
 
+    # Late-endgame: if clearly winning, strip non-front reserves for final push
+    if state.step > 380 and state.my_total > state.enemy_total * 1.35 and state.enemy_total > 0:
+        for pid in list(attack_budget.keys()):
+            planet = state.planet_by_id.get(pid)
+            if planet is not None and state.enemy_reach(planet)[0] > 12:
+                attack_budget[pid] += reserve[pid]
+                reserve[pid] = 0
+
+    departure_pressure = _enemy_departure_pressure(state)
     return {
         "reaction_time_map": reaction_time_map,
         "indirect_value": indirect_value,
         "reserve": reserve,
         "attack_budget": attack_budget,
+        "departure_pressure": departure_pressure,
     }
 
 
@@ -1177,6 +1208,11 @@ def _candidate_score(state, target, send, eta, kind, policy=None):
     if kind == "attack" and owner not in (-1, state.player) and target.ships < target.production * 3.5:
         score += target.production * 8.0
 
+    departure_pressure = policy.get("departure_pressure", {}) if policy else {}
+    if kind == "attack" and departure_pressure.get(target.id, 0) > 0:
+        departed = departure_pressure[target.id]
+        score += min(departed * 0.35, target.production * 14.0)
+
     enemy_eta, enemy_ships, _ = state.enemy_reach(target)
     race_margin = enemy_eta - eta
     if owner == -1:
@@ -1190,6 +1226,11 @@ def _candidate_score(state, target, send, eta, kind, policy=None):
             score += target.production * denied_turns * 0.28
             if race_margin >= 9.0 and state.step < 180:
                 score += target.production * 6.0
+        # Production-lead denial: when ahead, neutrals are worth more — protect the lead
+        if state.my_production > state.enemy_production * 1.10 and state.step > 60:
+            score += target.production * 6.0
+            if 0 < enemy_eta < 28:
+                score += target.production * (28.0 - enemy_eta) * 0.22
     elif owner not in (-1, state.player):
         if race_margin <= 4.0:
             score -= min(70.0, enemy_ships * 0.35 + 20.0)
@@ -1665,8 +1706,10 @@ def _build_multi_attack_candidate(state, target, available, planned_commitments=
     anchor_turns = sorted({int(math.ceil(item[0])) for item in options})[:3]
     for target_turn in anchor_turns:
         aligned = []
-        for _, source, _, source_available in options:
+        for src_eta, source, _, source_available in options:
             if source_available <= 0:
+                continue
+            if src_eta > target_turn + 3:
                 continue
             part = _aligned_part_for_turn(
                 source, target, target_turn, source_available, state
@@ -2073,6 +2116,15 @@ def _generate_staging_candidates(state, available):
         return []
     # Skip if ledger predicts loss (in-flight fleets are not covered by enemy_reach).
     if state.ledger.first_not_owned_turn(front.id, state.player, 18) is not None:
+        return []
+    # Don't stage into a front that has inbound enemy fleets arriving soon
+    enemy_inbound_to_front = sum(
+        ships
+        for turn, by_owner in state.ledger.arrivals.get(front.id, {}).items()
+        for owner, ships in by_owner.items()
+        if owner not in (-1, state.player) and turn <= 12
+    )
+    if enemy_inbound_to_front > 0:
         return []
     candidates = []
     for source in sorted(state.my_planets, key=lambda p: -frontier_distance[p.id]):

@@ -337,16 +337,16 @@ def train_member(torch, nn, functional, args, member_seed, tensors, pairs, featu
         def __init__(self, input_size):
             super().__init__()
             self.net = nn.Sequential(
-                nn.Linear(input_size, 160),
+                nn.Linear(input_size, 256),
                 nn.ReLU(),
                 nn.Dropout(args.dropout),
-                nn.Linear(160, 80),
+                nn.Linear(256, 128),
                 nn.ReLU(),
                 nn.Dropout(max(0.05, args.dropout * 0.70)),
-                nn.Linear(80, 40),
+                nn.Linear(128, 64),
                 nn.ReLU(),
                 nn.Dropout(max(0.03, args.dropout * 0.45)),
-                nn.Linear(40, 1),
+                nn.Linear(64, 1),
             )
 
         def forward(self, x):

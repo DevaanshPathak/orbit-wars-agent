@@ -1,5 +1,16 @@
 # Changelog
 
+## v16 - Heuristic Fixes: Attack Timing + Simultaneous Arrival + Neutral Denial + Endgame Strip + Staging Guard
+
+- Added `_enemy_departure_pressure` to `_build_policy`: detects enemy fleets moving away from a target planet and adds bonus score in `_candidate_score` (+`departed * 0.35`, capped at `production * 14`) so we attack while the garrison is reduced.
+- Filtered simultaneous arrivals in `_build_multi_attack_candidate`: skips sources whose ETA exceeds `target_turn + 3`, preventing stragglers from being bundled into a group that arrives too early without them.
+- Added neutral-denial bonus in `_candidate_score` when we lead production by 10%+ after step 60: +`production * 6.0` base, +`production * (28 - enemy_eta) * 0.22` when enemy is inbound within 28 turns.
+- Added late-endgame reserve strip in `_build_policy`: after step 380, when we hold a 35%+ ship advantage, strips reserves from planets with `enemy_reach` ETA > 12 turns so idle ships convert to pressure.
+- Added enemy-inbound staging guard in `_generate_staging_candidates`: aborts staging if any enemy fleet arrives at the destination front planet within 12 turns, preventing ships from being moved into an imminent fight.
+- Fixed training labels in `generate_training_data.py`: selected candidates in losing games now receive soft-negative labels (~0.30) instead of ~0.48, breaking the circular replication pattern and reducing `positive_rate` from ~70% to ~35%.
+- Widened `train_v15_ranker.py` hidden layers from `160→80→40` to `256→128→64` for better capacity on the 5k-game dataset.
+- Pure heuristic submission path: build from `main.py` directly without model weights.
+
 ## v15 - v13 Heuristic + Retrained Ensemble on Pinned 5k-Game Dataset (20260516_032302)
 
 - Trains a fresh 8-member ensemble ranker on top of the v13 heuristic using the pinned `data/20260516_032302` dataset (5k games × 2 sides = 10k game-plays, 608k rows, generated 2026-05-16).

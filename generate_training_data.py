@@ -678,10 +678,15 @@ def relabel_rows_with_outcome(rows, agent_reward, opponent_reward, margin, resul
             reason = ""
 
             if selected:
-                label = 0.48 + 0.30 * delta_signal + 0.10 * max(0.0, margin_unit)
-                weight = 0.75 + abs(delta_signal) * 1.60 + min(0.85, abs(margin_unit) * 0.65)
+                if result > 0.0:
+                    label = 0.53 + 0.24 * delta_signal + 0.08 * max(0.0, margin_unit)
+                elif result < 0.0:
+                    label = 0.30 + 0.14 * max(-1.0, delta_signal)
+                else:
+                    label = 0.42 + 0.10 * delta_signal
+                weight = 0.70 + abs(delta_signal) * 1.40 + min(0.75, abs(margin_unit) * 0.55)
                 if result == 0.0:
-                    weight *= 0.30
+                    weight *= 0.25
                 if delta_15 < -14.0 and expensive_commit and not tactical:
                     label = min(label, 0.22)
                     weight += 0.70
@@ -694,8 +699,8 @@ def relabel_rows_with_outcome(rows, agent_reward, opponent_reward, margin, resul
                 # and low-weight unless turn context says they were plausible corrections.
                 label = max(0.08, min(0.42, 0.24 + 0.12 * (score - selected_score)))
                 weight = 0.18 + min(0.35, max(0.0, top_score - score) * 0.08)
-                hard_alternative = rank <= 5 and score >= selected_score - 0.08
-                if hard_alternative and (delta_15 < -8.0 or result < 0.0):
+                hard_alternative = rank <= 4 and score >= selected_score - 0.15
+                if hard_alternative and (delta_15 < -5.0 or result < 0.0):
                     reason = reason_for_counterfactual(row, selected_row, result, delta_15)
                     counterfactual = True
                     label = 0.56 + min(0.20, max(0.0, score - selected_score) * 0.08)
