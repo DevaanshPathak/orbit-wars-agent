@@ -1,5 +1,10 @@
 # Changelog
 
+## v17 - v13 Heuristic + Retrained Ensemble on 5k-Game Dataset (20260517_074915)
+
+- Trains a fresh 8-member ensemble ranker on top of the v13 heuristic using the pinned `data/20260517_074915` dataset (5k games × 2 sides = 10k game-plays, 608k rows, generated 2026-05-17).
+- Added `notebooks/v16/train_v16_ranker.py` and `notebooks/v16/v16_training_policy.ipynb`; cell 3 fetches the **pinned** `data/20260517_074915/candidates_v7.csv` from HF directly (no auto-discovery). Artifacts upload to `devaanshpa/orbit-wars-agent/v16`.
+
 ## v15 - v13 Heuristic + Retrained Ensemble on Pinned 5k-Game Dataset (20260516_032302)
 
 - Trains a fresh 8-member ensemble ranker on top of the v13 heuristic using the pinned `data/20260516_032302` dataset (5k games × 2 sides = 10k game-plays, 608k rows, generated 2026-05-16).
