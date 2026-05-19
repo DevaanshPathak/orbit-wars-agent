@@ -12,6 +12,7 @@ from pathlib import Path
 HF_REPO_ID = "devaanshpa/orbit-wars-agent"
 HF_REPO_TYPE = "model"
 HF_REMOTE_PREFIX = "v17"
+PINNED_DATASET = "data/20260517_074915/candidates_v7.csv"
 
 METADATA_COLS = {
     "label",
@@ -46,7 +47,7 @@ def parse_args():
     parser.add_argument(
         "--prefer-local-data",
         action="store_true",
-        help="Use newest local data/*/candidates_v7.csv before Hugging Face. Default is to prefer Hugging Face.",
+        help="Use newest local data/*/candidates_v7.csv before Hugging Face. Default is to prefer the pinned HF dataset.",
     )
     parser.add_argument("--export-dir", default="notebooks/v17/exports")
     parser.add_argument("--epochs", type=int, default=int(os.environ.get("V17_EPOCHS", "300")))
@@ -112,16 +113,11 @@ def find_training_csv(csv_arg, prefer_local=False):
         raise RuntimeError("Install huggingface_hub to download data: pip install huggingface_hub") from exc
 
     api = HfApi(token=token)
-    files = api.list_repo_files(repo_id=HF_REPO_ID, repo_type=HF_REPO_TYPE)
-    data_csvs = sorted(
-        [f for f in files if f.startswith("data/") and f.endswith("/candidates_v7.csv")],
-        reverse=True,
-    )
-    if not data_csvs:
-        raise FileNotFoundError("No data/*/candidates_v7.csv found on Hugging Face.")
-    newest = data_csvs[0]
-    print(f"Auto-discovered newest HF dataset: {newest}", flush=True)
-    return Path(hf_hub_download(repo_id=HF_REPO_ID, repo_type=HF_REPO_TYPE, filename=newest, token=token))
+    files = set(api.list_repo_files(repo_id=HF_REPO_ID, repo_type=HF_REPO_TYPE))
+    if PINNED_DATASET not in files:
+        raise FileNotFoundError(f"Missing pinned dataset on Hugging Face: {PINNED_DATASET}")
+    print(f"Using pinned HF dataset: {PINNED_DATASET}", flush=True)
+    return Path(hf_hub_download(repo_id=HF_REPO_ID, repo_type=HF_REPO_TYPE, filename=PINNED_DATASET, token=token))
 
 
 def row_float(row, key, default=0.0):
