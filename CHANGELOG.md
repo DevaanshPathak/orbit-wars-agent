@@ -1,5 +1,15 @@
 # Changelog
 
+## v18 - Reward-Resistant Constrained SFT + GRPO Workbench
+
+- Added `notebooks/v18/` with self-contained SFT and GRPO notebooks plus optional local trainer scripts.
+- SFT notebook downloads the pinned `data/20260517_074915/candidates_v7.csv`, trains a 4-member candidate-policy ensemble, logs every epoch, saves graphs, checkpoints every 30 epochs, and uploads artifacts to `devaanshpa/orbit-wars-agent/v18/sft/`.
+- Updated v18 SFT to use `torch.nn.DataParallel` on multi-GPU CUDA runtimes by default (`V18_SFT_MULTI_GPU=1`) and flattened each batch of turn-groups into larger forwards so Kaggle 2*T4 has enough work to split.
+- Updated v18 notebook auth cells to read `HF_TOKEN` from Kaggle Secrets or existing environment variables before falling back to a local prompt, avoiding Kaggle `getpass` stdin failures.
+- GRPO notebook downloads the pinned candidate CSV and the SFT artifact from `v18/sft/model_weights_v18_sft.json`, then uploads final artifacts to `v18/grpo/`.
+- Added bounded multi-component GRPO reward with reduced selected-action anchoring, future advantage deltas, production/planet deltas, final result/margin, explicit failure/crash/overcommit penalties, KL-to-SFT, supervised anchor, reward-gap diagnostics, and failure-exposure validation.
+- Kept RL constrained to legal heuristic candidate move-sets rather than raw angle/ship generation, so the policy can improve strategic selection without relearning basic legality, sun avoidance, and intercept mechanics.
+
 ## v17 - v16 Heuristic + Pinned Offline Dataset Ensemble
 
 - Uploaded the offline `data/20260517_074915` candidate dataset to Hugging Face under `devaanshpa/orbit-wars-agent/data/20260517_074915/`.
