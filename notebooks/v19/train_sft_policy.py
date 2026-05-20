@@ -11,8 +11,8 @@ from pathlib import Path
 
 HF_REPO_ID = "devaanshpa/orbit-wars-agent"
 HF_REPO_TYPE = "model"
-HF_REMOTE_PREFIX = "v18/sft"
-PINNED_DATASET = "data/20260517_074915/candidates_v7.csv"
+HF_REMOTE_PREFIX = "v19/sft"
+PINNED_DATASET = ""  # v19 data path set after generation; use --csv or --data-remote-path
 
 METADATA_COLS = {
     "label",
@@ -35,6 +35,11 @@ METADATA_COLS = {
     "future_advantage_delta_30",
     "future_production_delta_15",
     "future_planet_delta_15",
+    "cf_margin_delta",
+    "cf_prod_delta",
+    "cf_planet_delta",
+    "cf_survival",
+    "cf_crash",
     "game_id",
     "candidate_id",
     "version",
@@ -43,41 +48,41 @@ METADATA_COLS = {
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Train the v18 SFT candidate policy from Orbit Wars candidate groups."
+        description="Train the v19 counterfactual-weighted SFT candidate policy from Orbit Wars candidate groups."
     )
     parser.add_argument("--csv", default=os.environ.get("CANDIDATES_CSV", ""))
     parser.add_argument(
         "--data-remote-path",
-        default=os.environ.get("V18_SFT_DATA_REMOTE_PATH", PINNED_DATASET),
-        help="Optional exact Hugging Face repo path for candidates_v7.csv. Defaults to the pinned v17/v18 dataset.",
+        default=os.environ.get("V19_SFT_DATA_REMOTE_PATH", PINNED_DATASET),
+        help="Hugging Face repo path for candidates_v19.csv.",
     )
     parser.add_argument(
         "--prefer-local-data",
         action="store_true",
-        help="Use a local candidates_v7.csv/candidates_v18.csv before trying Hugging Face. Default is Hugging Face.",
+        help="Use a local candidates_v19.csv before trying Hugging Face.",
     )
-    parser.add_argument("--export-dir", default="notebooks/v18/exports/sft")
-    parser.add_argument("--epochs", type=int, default=int(os.environ.get("V18_SFT_EPOCHS", "220")))
-    parser.add_argument("--batch-groups", type=int, default=int(os.environ.get("V18_SFT_BATCH_GROUPS", "256")))
-    parser.add_argument("--lr", type=float, default=float(os.environ.get("V18_SFT_LR", "0.00055")))
-    parser.add_argument("--weight-decay", type=float, default=float(os.environ.get("V18_SFT_WEIGHT_DECAY", "0.00028")))
-    parser.add_argument("--dropout", type=float, default=float(os.environ.get("V18_SFT_DROPOUT", "0.12")))
-    parser.add_argument("--bce-weight", type=float, default=float(os.environ.get("V18_SFT_BCE_WEIGHT", "0.24")))
-    parser.add_argument("--pair-weight", type=float, default=float(os.environ.get("V18_SFT_PAIR_WEIGHT", "0.30")))
-    parser.add_argument("--rank-weight", type=float, default=float(os.environ.get("V18_SFT_RANK_WEIGHT", "0.55")))
-    parser.add_argument("--ensemble-size", type=int, default=int(os.environ.get("V18_SFT_ENSEMBLE_SIZE", "4")))
-    parser.add_argument("--patience", type=int, default=int(os.environ.get("V18_SFT_PATIENCE", "34")))
-    parser.add_argument("--checkpoint-every", type=int, default=int(os.environ.get("V18_SFT_CHECKPOINT_EVERY", "30")))
+    parser.add_argument("--export-dir", default="notebooks/v19/exports/sft")
+    parser.add_argument("--epochs", type=int, default=int(os.environ.get("V19_SFT_EPOCHS", "180")))
+    parser.add_argument("--batch-groups", type=int, default=int(os.environ.get("V19_SFT_BATCH_GROUPS", "256")))
+    parser.add_argument("--lr", type=float, default=float(os.environ.get("V19_SFT_LR", "0.00055")))
+    parser.add_argument("--weight-decay", type=float, default=float(os.environ.get("V19_SFT_WEIGHT_DECAY", "0.00028")))
+    parser.add_argument("--dropout", type=float, default=float(os.environ.get("V19_SFT_DROPOUT", "0.12")))
+    parser.add_argument("--bce-weight", type=float, default=float(os.environ.get("V19_SFT_BCE_WEIGHT", "0.24")))
+    parser.add_argument("--pair-weight", type=float, default=float(os.environ.get("V19_SFT_PAIR_WEIGHT", "0.30")))
+    parser.add_argument("--rank-weight", type=float, default=float(os.environ.get("V19_SFT_RANK_WEIGHT", "0.55")))
+    parser.add_argument("--ensemble-size", type=int, default=int(os.environ.get("V19_SFT_ENSEMBLE_SIZE", "4")))
+    parser.add_argument("--patience", type=int, default=int(os.environ.get("V19_SFT_PATIENCE", "34")))
+    parser.add_argument("--checkpoint-every", type=int, default=int(os.environ.get("V19_SFT_CHECKPOINT_EVERY", "30")))
     parser.add_argument(
         "--multi-gpu",
         action="store_true",
-        default=os.environ.get("V18_SFT_MULTI_GPU", "1").strip().lower() not in {"0", "false", "no", "off"},
+        default=os.environ.get("V19_SFT_MULTI_GPU", "1").strip().lower() not in {"0", "false", "no", "off"},
         help="Use torch.nn.DataParallel when multiple CUDA devices are available. Enabled by default.",
     )
     parser.add_argument(
         "--device",
         choices=("cuda", "cpu", "auto"),
-        default=os.environ.get("V18_DEVICE", "cuda"),
+        default=os.environ.get("V19_DEVICE", "cuda"),
         help="Training device. Defaults to CUDA for Kaggle 2*T4 runs.",
     )
     parser.add_argument("--seed", type=int, default=1801)
@@ -106,7 +111,7 @@ def download_training_csv(remote_path, repo_id=HF_REPO_ID, repo_type=HF_REPO_TYP
     load_dotenv()
     token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")
     if not token:
-        raise RuntimeError("HF_TOKEN is required to download candidates_v7.csv from Hugging Face.")
+        raise RuntimeError("HF_TOKEN is required to download candidates_v19.csv from Hugging Face.")
     try:
         from huggingface_hub import HfApi, hf_hub_download
     except ModuleNotFoundError as exc:
@@ -119,12 +124,12 @@ def download_training_csv(remote_path, repo_id=HF_REPO_ID, repo_type=HF_REPO_TYP
             [
                 name
                 for name in files
-                if name.startswith("data/") and name.endswith("/candidates_v7.csv")
+                if name.startswith("data/") and (name.endswith("/candidates_v19.csv") or name.endswith("/candidates_v7.csv"))
             ],
             reverse=True,
         )
         if not remote_csvs:
-            raise FileNotFoundError("No data/*/candidates_v7.csv found in Hugging Face repo.")
+            raise FileNotFoundError("No data/*/candidates_v19.csv or candidates_v7.csv found in Hugging Face repo.")
         remote_path = remote_csvs[0]
 
     return Path(
@@ -149,8 +154,8 @@ def find_training_csv(csv_arg, remote_path="", prefer_local=False):
 
     local_candidates = []
     for pattern in (
-        "notebooks/v18/data/candidates_v18.csv",
-        "notebooks/v18/data/candidates_v7.csv",
+        "notebooks/v19/data/candidates_v19.csv",
+        "notebooks/v19/data/candidates_v7.csv",
     ):
         path = Path(pattern)
         if path.exists():
@@ -158,7 +163,7 @@ def find_training_csv(csv_arg, remote_path="", prefer_local=False):
 
     root = Path("data")
     if root.exists():
-        local_candidates.extend(root.glob("*/candidates_v18.csv"))
+        local_candidates.extend(root.glob("*/candidates_v19.csv"))
         local_candidates.extend(root.glob("*/candidates_v7.csv"))
     if local_candidates:
         return sorted(local_candidates, key=lambda path: path.stat().st_mtime, reverse=True)[0]
@@ -222,20 +227,32 @@ def build_groups(rows, indices):
 
 
 def target_distribution(rows, labels, selected, counterfactual, group):
+    """v19: counterfactual-weighted target distribution.
+
+    Candidates with higher cf_margin_delta get higher target probability,
+    giving the SFT model causal signal about which moves are genuinely good.
+    """
     weights = []
     for raw_index in group:
         label = labels[raw_index]
         score = row_float(rows[raw_index], "heuristic_score_scaled", 0.0)
+        # v19: blend counterfactual rollout delta into target weight
+        cf_margin = row_float(rows[raw_index], "cf_margin_delta", 0.0)
+        cf_weight = max(-0.4, min(0.8, cf_margin / 60.0))
         turn_delta = (
-            row_float(rows[raw_index], "future_advantage_delta_15", 0.0) * 0.010
-            + row_float(rows[raw_index], "future_production_delta_15", 0.0) * 0.040
-            + row_float(rows[raw_index], "future_planet_delta_15", 0.0) * 0.120
+            row_float(rows[raw_index], "future_advantage_delta_15", 0.0) * 0.008
+            + row_float(rows[raw_index], "future_production_delta_15", 0.0) * 0.030
+            + row_float(rows[raw_index], "future_planet_delta_15", 0.0) * 0.100
         )
-        value = max(0.01, label + 0.06 * score + turn_delta)
+        value = max(0.01, label + 0.06 * score + turn_delta + cf_weight)
         if selected[raw_index]:
-            value += 0.35
+            value += 0.30
         if counterfactual[raw_index]:
             value += 0.25
+        # v19: penalize crash candidates more aggressively
+        cf_crash = row_float(rows[raw_index], "cf_crash", 0.0)
+        if cf_crash >= 0.5:
+            value *= 0.15
         if row_float(rows[raw_index], "failure_overcommit", 0.0) >= 0.5:
             value *= 0.45
         weights.append(max(0.01, value))
@@ -407,14 +424,14 @@ def save_sft_checkpoint(args, model, nn, member_seed, epoch, item, history, feat
     checkpoint_dir = Path(args.export_dir) / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     payload = {
-        "version": "v18_sft_checkpoint",
+        "version": "v19_sft_checkpoint",
         "created_at": int(time.time()),
         "seed": member_seed,
         "epoch": epoch,
         "latest_metrics": item,
         "history": history,
         "member": {
-            "version": "v18_sft",
+            "version": "v19_sft",
             "model_type": "mlp_relu_candidate_ranker",
             "features": feature_names,
             "mean": dict(zip(feature_names, means)),
@@ -426,12 +443,12 @@ def save_sft_checkpoint(args, model, nn, member_seed, epoch, item, history, feat
     }
     path = checkpoint_dir / f"sft_seed_{member_seed}_epoch_{epoch:03d}.json"
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    print(f"Saved v18 SFT checkpoint: {path}", flush=True)
+    print(f"Saved v19 SFT checkpoint: {path}", flush=True)
     maybe_upload_file(
         args,
         path,
         f"{HF_REMOTE_PREFIX}/checkpoints/{path.name}",
-        f"Upload v18 SFT checkpoint seed {member_seed} epoch {epoch}",
+        f"Upload v19 SFT checkpoint seed {member_seed} epoch {epoch}",
     )
 
 
@@ -625,7 +642,7 @@ def train(args):
         from torch import nn
         import torch.nn.functional as functional
     except ModuleNotFoundError as exc:
-        raise RuntimeError("PyTorch is required for v18 SFT training. Install torch or use Kaggle/Colab.") from exc
+        raise RuntimeError("PyTorch is required for v19 SFT training. Install torch or use Kaggle/Colab.") from exc
 
     random.seed(args.seed)
     data_path = find_training_csv(
@@ -711,7 +728,7 @@ def train(args):
         histories.append({"seed": member_seed, "history": history, "best_validation_objective": best_objective})
         members.append(
             {
-                "version": "v18_sft",
+                "version": "v19_sft",
                 "model_type": "mlp_relu_candidate_ranker",
                 "features": feature_names,
                 "mean": dict(zip(feature_names, means)),
@@ -756,7 +773,7 @@ def train(args):
         "multi_gpu_data_parallel": bool(getattr(args, "multi_gpu", False) and device.type == "cuda" and cuda_devices > 1),
     }
     artifact = {
-        "version": "v18_sft",
+        "version": "v19_sft",
         "created_at": int(time.time()),
         "source_csv": str(data_path),
         "model_type": "ensemble_mlp_relu_candidate_ranker",
@@ -769,11 +786,11 @@ def train(args):
     graph_dir = export_dir / "graphs"
     export_dir.mkdir(parents=True, exist_ok=True)
     graph_dir.mkdir(parents=True, exist_ok=True)
-    (export_dir / "model_weights_v18_sft.json").write_text(json.dumps(artifact, indent=2, sort_keys=True), encoding="utf-8")
-    (export_dir / "feature_schema_v18_sft.json").write_text(json.dumps({"features": feature_names}, indent=2), encoding="utf-8")
-    (export_dir / "metrics_v18_sft.json").write_text(json.dumps(metrics, indent=2, sort_keys=True), encoding="utf-8")
-    (export_dir / "training_history_v18_sft.json").write_text(json.dumps(histories, indent=2, sort_keys=True), encoding="utf-8")
-    with (export_dir / "predictions_v18_sft.csv").open("w", newline="", encoding="utf-8") as f:
+    (export_dir / "model_weights_v19_sft.json").write_text(json.dumps(artifact, indent=2, sort_keys=True), encoding="utf-8")
+    (export_dir / "feature_schema_v19_sft.json").write_text(json.dumps({"features": feature_names}, indent=2), encoding="utf-8")
+    (export_dir / "metrics_v19_sft.json").write_text(json.dumps(metrics, indent=2, sort_keys=True), encoding="utf-8")
+    (export_dir / "training_history_v19_sft.json").write_text(json.dumps(histories, indent=2, sort_keys=True), encoding="utf-8")
+    with (export_dir / "predictions_v19_sft.csv").open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["row_index", "label", "prediction", "selected", "counterfactual_positive", "game_result", "split"])
         valid_set = set(valid_indices)
@@ -797,10 +814,10 @@ def train(args):
         plt.plot(epochs, [item["valid_objective"] for item in first_history], label="validation objective")
         plt.plot(epochs, [item["valid_turn_top1"] for item in first_history], label="validation top1")
         plt.xlabel("epoch")
-        plt.title("v18 SFT validation")
+        plt.title("v19 SFT validation")
         plt.legend()
         plt.tight_layout()
-        plt.savefig(graph_dir / "sft_validation_v18.png", dpi=150)
+        plt.savefig(graph_dir / "sft_validation_v19.png", dpi=150)
         plt.close()
 
         plt.figure(figsize=(7, 4))
@@ -808,16 +825,16 @@ def train(args):
         plt.hist([pred for pred, ok in zip(all_probs, positive_mask) if not ok], bins=30, alpha=0.65, label="other")
         plt.xlabel("policy probability")
         plt.ylabel("rows")
-        plt.title("v18 SFT prediction distribution")
+        plt.title("v19 SFT prediction distribution")
         plt.legend()
         plt.tight_layout()
-        plt.savefig(graph_dir / "sft_prediction_histogram_v18.png", dpi=150)
+        plt.savefig(graph_dir / "sft_prediction_histogram_v19.png", dpi=150)
         plt.close()
     except ModuleNotFoundError:
         print("matplotlib is not installed; skipped graph generation.", flush=True)
 
     print(json.dumps(metrics, indent=2, sort_keys=True), flush=True)
-    print(f"Saved v18 SFT artifact: {export_dir / 'model_weights_v18_sft.json'}", flush=True)
+    print(f"Saved v19 SFT artifact: {export_dir / 'model_weights_v19_sft.json'}", flush=True)
 
     if args.upload:
         load_dotenv()
@@ -835,7 +852,7 @@ def train(args):
             repo_id=args.hf_repo_id,
             repo_type=args.hf_repo_type,
             path_in_repo=HF_REMOTE_PREFIX,
-            commit_message="Upload v18 SFT Orbit Wars policy artifacts and graphs",
+            commit_message="Upload v19 SFT Orbit Wars policy artifacts and graphs",
         )
         print(f"Uploaded {export_dir} to https://huggingface.co/{args.hf_repo_id}/tree/main/{HF_REMOTE_PREFIX}", flush=True)
 
