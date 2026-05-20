@@ -608,6 +608,324 @@ def evaluate_obs_advantage(obs):
     }
 
 
+# ---------------------------------------------------------------------------
+# Shallow rollout simulator for counterfactual evaluation
+# ---------------------------------------------------------------------------
+
+def _evaluate_state_metrics(state):
+    """Extract advantage metrics from a GameState for rollout comparison."""
+    my_ship_total = float(state.my_total)
+    enemy_ship_total = float(state.enemy_total)
+    my_production = float(state.my_production)
+    enemy_production = float(state.enemy_production)
+    my_planet_count = len(state.my_planets)
+    enemy_planet_count = len(state.enemy_planets)
+    ship_gap = my_ship_total - enemy_ship_total
+    production_gap = my_production - enemy_production
+    planet_gap = float(my_planet_count - enemy_planet_count)
+    advantage = ship_gap + production_gap * 24.0 + planet_gap * 18.0
+    return {
+        "advantage": advantage,
+        "production_gap": production_gap,
+        "planet_gap": planet_gap,
+        "my_total": my_ship_total,
+        "enemy_total": enemy_ship_total,
+        "my_production": my_production,
+        "enemy_production": enemy_production,
+        "my_planets": my_planet_count,
+        "enemy_planets": enemy_planet_count,
+        "alive": 1.0 if my_planet_count > 0 else 0.0,
+    }
+
+
+def shallow_rollout_deltas(state, candidate, baseline_candidate, rollout_turns, rollout_opponent_fn):
+    """Run a shallow ledger-based rollout for `candidate` vs `baseline_candidate`.
+
+    Instead of re-running the full environment, we project the game state
+    forward using the arrival ledger.  For each candidate we:
+      1. Apply the candidate's fleet launches to the ledger.
+      2. Simulate `rollout_turns` of production accumulation and fleet arrivals.
+      3. Record the resulting advantage metrics.
+    The return value is the delta between the candidate rollout and the baseline
+    rollout, giving a causal estimate of the candidate's value.
+
+    Returns dict with cf_margin_delta, cf_prod_delta, cf_planet_delta,
+    cf_survival, cf_crash.
+    """
+    baseline_metrics = _simulate_candidate_forward(
+        state, baseline_candidate, rollout_turns, rollout_opponent_fn
+    )
+    candidate_metrics = _simulate_candidate_forward(
+        state, candidate, rollout_turns, rollout_opponent_fn
+    )
+
+    if baseline_metrics is None or candidate_metrics is None:
+        return {
+            "cf_margin_delta": 0.0,
+            "cf_prod_delta": 0.0,
+            "cf_planet_delta": 0.0,
+            "cf_survival": 1.0,
+            "cf_crash": 0.0,
+        }
+
+    return {
+        "cf_margin_delta": round(
+            candidate_metrics["advantage"] - baseline_metrics["advantage"], 4
+        ),
+        "cf_prod_delta": round(
+            candidate_metrics["production_gap"] - baseline_metrics["production_gap"], 4
+        ),
+        "cf_planet_delta": round(
+            candidate_metrics["planet_gap"] - baseline_metrics["planet_gap"], 4
+        ),
+        "cf_survival": candidate_metrics["alive"],
+        "cf_crash": 1.0 if candidate_metrics.get("crash_detected", False) else 0.0,
+    }
+
+
+def _simulate_candidate_forward(state, candidate, rollout_turns, rollout_opponent_fn):
+    """Project game state forward after applying a candidate's moves.
+
+    Uses the ledger-based projection: for each turn in the rollout window,
+    we estimate planet ownership changes from known fleet arrivals and
+    production accumulation.  This is approximate but very fast (~2-5ms).
+    """
+    if candidate is None:
+        return _evaluate_state_metrics(state)
+
+    try:
+        # Snapshot current state metrics
+        start_metrics = _evaluate_state_metrics(state)
+
+        # Project forward using the ledger
+        projected_my_ships = start_metrics["my_total"]
+        projected_enemy_ships = start_metrics["enemy_total"]
+        projected_my_prod = start_metrics["my_production"]
+        projected_enemy_prod = start_metrics["enemy_production"]
+        projected_my_planets = start_metrics["my_planets"]
+        projected_enemy_planets = start_metrics["enemy_planets"]
+        crash_detected = False
+
+        # Account for ships committed by this candidate
+        committed_ships = float(candidate.ships)
+        projected_my_ships -= committed_ships * 0.05  # small transit cost
+
+        # Estimate arrival effects
+        eta = max(1.0, float(candidate.eta))
+        target = state.planet_by_id.get(candidate.target_id)
+        if target is None:
+            return None
+
+        # Check sun collision risk using the candidate's parts
+        for source_id, angle, ships in candidate.parts:
+            source = state.planet_by_id.get(source_id)
+            if source is not None and hasattr(main, 'path_crosses_sun'):
+                target_pos = main._target_position(
+                    candidate.target_id, state.step, state.step + eta, state.obs
+                )
+                if target_pos is not None and main.path_crosses_sun(
+                    (source.x, source.y), target_pos
+                ):
+                    crash_detected = True
+
+        # Project forward turn by turn
+        for turn_offset in range(1, rollout_turns + 1):
+            # Production accumulation
+            projected_my_ships += projected_my_prod
+            projected_enemy_ships += projected_enemy_prod
+
+            # Check if our candidate arrives this turn
+            if abs(turn_offset - eta) < 1.0 and not crash_detected:
+                # Estimate capture effect
+                owner_at_eta, garrison_at_eta = state.ledger.state_at(
+                    candidate.target_id, turn_offset
+                )
+                if owner_at_eta != state.player:
+                    capture_margin = committed_ships - garrison_at_eta
+                    if capture_margin > 0:
+                        # Successful capture
+                        if owner_at_eta == -1:
+                            projected_my_planets += 1
+                        else:
+                            projected_my_planets += 1
+                            projected_enemy_planets = max(0, projected_enemy_planets - 1)
+                            projected_enemy_ships -= garrison_at_eta
+                            projected_enemy_prod -= target.production
+                        projected_my_prod += target.production
+                        projected_my_ships += capture_margin
+                    else:
+                        # Failed capture — ships lost
+                        projected_my_ships -= committed_ships
+
+            # Check for incoming enemy fleet arrivals from ledger
+            arrivals = state.ledger.arrivals.get(candidate.target_id, {})
+            if turn_offset in arrivals:
+                for owner, ships in arrivals[turn_offset].items():
+                    if owner not in (-1, state.player) and ships > 0:
+                        projected_enemy_ships += ships * 0.3  # partial effect estimate
+
+        # Final metrics
+        ship_gap = projected_my_ships - projected_enemy_ships
+        prod_gap = projected_my_prod - projected_enemy_prod
+        planet_gap = float(projected_my_planets - projected_enemy_planets)
+        advantage = ship_gap + prod_gap * 24.0 + planet_gap * 18.0
+
+        return {
+            "advantage": advantage,
+            "production_gap": prod_gap,
+            "planet_gap": planet_gap,
+            "my_total": projected_my_ships,
+            "enemy_total": projected_enemy_ships,
+            "my_production": projected_my_prod,
+            "enemy_production": projected_enemy_prod,
+            "my_planets": projected_my_planets,
+            "enemy_planets": projected_enemy_planets,
+            "alive": 1.0 if projected_my_planets > 0 else 0.0,
+            "crash_detected": crash_detected,
+        }
+    except Exception:
+        return _evaluate_state_metrics(state)
+
+
+# ---------------------------------------------------------------------------
+# Experimental candidate generators for v19
+# ---------------------------------------------------------------------------
+
+def _generate_comet_denial_candidates(state, available, policy):
+    """Generate minimum-commitment comet captures to deny enemy access."""
+    candidates = []
+    for target in state.comet_planets:
+        if target.owner == state.player or target.ships > 20:
+            continue
+        # Find nearest source that can send minimum ships
+        for source in sorted(
+            [p for p in state.my_planets if available.get(p.id, 0) >= max(2, int(target.ships + 2))],
+            key=lambda p: math.hypot(p.x - target.x, p.y - target.y),
+        )[:3]:
+            send = max(2, int(target.ships + 2))
+            if send > available.get(source.id, 0):
+                continue
+            intercept = main._validated_intercept(source, target, send, state)
+            if intercept is None:
+                continue
+            angle, eta = intercept
+            if eta > 20:
+                continue
+            score = target.production * 8.0 - send * 0.5 - eta * 0.3
+            candidates.append(main.Candidate(
+                "comet", score, target.id,
+                ((source.id, angle, send),),
+                eta, send, "comet_denial",
+            ))
+            break
+    return candidates
+
+
+def _generate_split_reserve_candidates(state, available, policy):
+    """Split a planet's available ships to two different targets simultaneously."""
+    candidates = []
+    rich_sources = sorted(
+        [p for p in state.my_planets if available.get(p.id, 0) >= 16],
+        key=lambda p: -available.get(p.id, 0),
+    )[:3]
+    targets = [p for p in state.planets if p.owner != state.player and p.id not in state.comet_ids]
+    targets.sort(key=lambda p: main._target_priority(state, p), reverse=True)
+
+    for source in rich_sources:
+        budget = available.get(source.id, 0)
+        if budget < 16 or len(targets) < 2:
+            continue
+        # Pick best two targets reachable from this source
+        viable_targets = []
+        for target in targets[:8]:
+            send = max(2, int(target.ships + main.CAPTURE_BUFFER))
+            if send > budget // 2:
+                continue
+            intercept = main._validated_intercept(source, target, send, state)
+            if intercept is None:
+                continue
+            angle, eta = intercept
+            if eta > 30:
+                continue
+            viable_targets.append((target, angle, send, eta))
+            if len(viable_targets) >= 2:
+                break
+
+        if len(viable_targets) >= 2:
+            t1, a1, s1, e1 = viable_targets[0]
+            t2, a2, s2, e2 = viable_targets[1]
+            # Create a candidate with two parts
+            total_send = s1 + s2
+            if total_send <= budget:
+                score = (
+                    t1.production * 10.0 + t2.production * 10.0
+                    - total_send * 0.5
+                    - (e1 + e2) * 0.25
+                )
+                # Use first target as the primary
+                candidates.append(main.Candidate(
+                    "expand", score, t1.id,
+                    ((source.id, a1, s1),),
+                    e1, s1, "split_reserve_a",
+                ))
+                candidates.append(main.Candidate(
+                    "expand", score * 0.9, t2.id,
+                    ((source.id, a2, s2),),
+                    e2, s2, "split_reserve_b",
+                ))
+    return candidates
+
+
+def _generate_delayed_attack_candidates(state, available, policy):
+    """Candidates that represent 'wait 3-5 turns then attack with more ships'.
+
+    These are modeled as regular attack candidates but with inflated ship
+    counts (simulating accumulated production) and adjusted ETAs.
+    """
+    candidates = []
+    if state.step > 350:  # no point delaying near endgame
+        return candidates
+
+    for target in [p for p in state.planets if p.owner not in (-1, state.player)]:
+        if target.production < 3:
+            continue
+        for source in sorted(
+            [p for p in state.my_planets if available.get(p.id, 0) >= 8],
+            key=lambda p: math.hypot(p.x - target.x, p.y - target.y),
+        )[:3]:
+            current_available = available.get(source.id, 0)
+            # Simulate waiting 4 turns — accumulate production
+            future_available = current_available + source.production * 4
+            needed = state.min_ships_to_own_at(
+                target.id,
+                max(1, int(4 + math.hypot(source.x - target.x, source.y - target.y) / 4.0)),
+                upper_bound=future_available,
+            )
+            if needed <= 0 or needed > future_available:
+                continue
+            # Cannot actually launch now, but this candidate signals "wait"
+            # Score it lower than immediate attacks to avoid always delaying
+            intercept = main._validated_intercept(source, target, current_available, state)
+            if intercept is None:
+                continue
+            angle, eta = intercept
+            adjusted_eta = eta + 4.0
+            score = (
+                target.production * 12.0
+                + target.ships * 0.2
+                - needed * 0.4
+                - adjusted_eta * 0.5
+                - 15.0  # delay penalty
+            )
+            candidates.append(main.Candidate(
+                "attack", score, target.id,
+                ((source.id, angle, needed),),
+                adjusted_eta, needed, "delayed_attack",
+            ))
+            break
+    return candidates
+
+
 def _future_delta(step_values, step, key, horizon):
     if not step_values:
         return 0.0
