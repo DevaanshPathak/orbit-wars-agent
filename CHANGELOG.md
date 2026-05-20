@@ -1,5 +1,13 @@
 # Changelog
 
+## v19 - Counterfactual RL
+
+- Added `--mode rl-counterfactual` to `generate_training_data.py` to collect shallow causal rollouts (25-turn projections) and capture exact advantage deltas (`cf_margin_delta`, `cf_prod_delta`, `cf_planet_delta`) per candidate, replacing legacy static heuristics.
+- Added explicit experimental candidate generators (comet denial, split reserve expansion, delayed attacks) that fire during data generation to broaden the counterfactual action space.
+- Added `notebooks/v19/train_sft_policy.py` which transitions target generation from static heuristic selected-labels to a counterfactual-weighted cross-entropy loss, aggressively prioritizing candidates that show positive causal rollout metrics.
+- Added `notebooks/v19/train_grpo_policy.py` which updates the candidate reward components to directly use counterfactual deltas (`cf_margin_delta`, `cf_survival`, `cf_crash`) rather than just heuristic labels and static turn advantages.
+- Upgraded Kaggle notebook shims (`sft_training_policy.ipynb` and `grpo_training_policy.ipynb`) for v19, keeping the 2*T4 setup with HF integration for `candidates_v19.csv` datasets.
+
 ## v18 - Reward-Resistant Constrained SFT + GRPO Workbench
 
 - Added `notebooks/v18/` with self-contained SFT and GRPO notebooks plus optional local trainer scripts.
