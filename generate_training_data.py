@@ -349,7 +349,7 @@ def add_candidates(records, candidates, limit, score_fn):
     return ranked
 
 
-def seed_candidate_pool(records, state, policy, max_candidates_per_turn):
+def seed_candidate_pool(records, state, policy, max_candidates_per_turn, experimental=False):
     available = dict(policy["attack_budget"])
     planned = {}
     protected_targets = set()
@@ -392,6 +392,24 @@ def seed_candidate_pool(records, state, policy, max_candidates_per_turn):
         + main._planner_projected_value(state, c, policy),
     )
 
+    # v19 experimental candidate generators
+    if experimental:
+        try:
+            comet_deny = _generate_comet_denial_candidates(state, available, policy)
+            add_candidates(records, comet_deny, max_candidates_per_turn, lambda c: c.score)
+        except Exception:
+            pass
+        try:
+            splits = _generate_split_reserve_candidates(state, available, policy)
+            add_candidates(records, splits, max_candidates_per_turn, lambda c: c.score)
+        except Exception:
+            pass
+        try:
+            delayed = _generate_delayed_attack_candidates(state, available, policy)
+            add_candidates(records, delayed, max_candidates_per_turn, lambda c: c.score)
+        except Exception:
+            pass
+
 
 def mark_if_applied(candidate, available, moves, planned, player, selected):
     if main._apply_candidate(candidate, available, moves, planned, player):
@@ -400,10 +418,15 @@ def mark_if_applied(candidate, available, moves, planned, player, selected):
     return False
 
 
-def candidate_rows_from_obs(obs, game_id, max_candidates_per_turn, use_deep_planner):
+def candidate_rows_from_obs(obs, game_id, max_candidates_per_turn, use_deep_planner,
+                            mode="legacy", rollout_turns=DEFAULT_ROLLOUT_TURNS,
+                            rollout_candidates=DEFAULT_ROLLOUT_CANDIDATES):
     state = main.GameState(obs)
     if not state.my_planets:
         return []
+
+    is_v19 = mode == "rl-counterfactual"
+    version = VERSION_V19 if is_v19 else VERSION_LEGACY
 
     policy = main._build_policy(state)
     available = dict(policy["attack_budget"])
@@ -413,7 +436,7 @@ def candidate_rows_from_obs(obs, game_id, max_candidates_per_turn, use_deep_plan
     protected_targets = set()
     records = {}
     selected = set()
-    seed_candidate_pool(records, state, policy, max_candidates_per_turn)
+    seed_candidate_pool(records, state, policy, max_candidates_per_turn, experimental=is_v19)
 
     defense = add_candidates(
         records,
@@ -531,6 +554,38 @@ def candidate_rows_from_obs(obs, game_id, max_candidates_per_turn, use_deep_plan
     if not selected:
         return []
 
+    # -----------------------------------------------------------------------
+    # v19 counterfactual rollout: evaluate top candidates against baseline
+    # -----------------------------------------------------------------------
+    cf_deltas = {}  # key -> {cf_margin_delta, cf_prod_delta, ...}
+    if is_v19:
+        # Find the baseline candidate (the one the heuristic selected)
+        selected_keys = list(selected)
+        baseline_key = selected_keys[0] if selected_keys else None
+        baseline_candidate = records.get(baseline_key) if baseline_key else None
+
+        # Rank all candidates by heuristic score, pick top N for rollouts
+        ranked_items = sorted(
+            records.items(),
+            key=lambda item: main._score_candidate_v5(state, item[1], policy),
+            reverse=True,
+        )
+        for idx, (key, candidate) in enumerate(ranked_items[:rollout_candidates]):
+            try:
+                deltas = shallow_rollout_deltas(
+                    state, candidate, baseline_candidate,
+                    rollout_turns, rollout_opponent_fn=None,
+                )
+                cf_deltas[key] = deltas
+            except Exception:
+                cf_deltas[key] = {
+                    "cf_margin_delta": 0.0,
+                    "cf_prod_delta": 0.0,
+                    "cf_planet_delta": 0.0,
+                    "cf_survival": 1.0,
+                    "cf_crash": 0.0,
+                }
+
     rows = []
     for key, candidate in records.items():
         features = main._candidate_features(state, candidate, policy)
@@ -545,10 +600,17 @@ def candidate_rows_from_obs(obs, game_id, max_candidates_per_turn, use_deep_plan
             "opponent_reward": 0.0,
             "game_id": game_id,
             "candidate_id": key,
-            "version": VERSION,
+            "version": version,
         }
         for field in FEATURE_FIELDS:
             row[field] = float(features.get(field, 0.0))
+        # Populate cf_* fields from rollout deltas (or zeros if not evaluated)
+        deltas = cf_deltas.get(key, {})
+        row["cf_margin_delta"] = deltas.get("cf_margin_delta", 0.0)
+        row["cf_prod_delta"] = deltas.get("cf_prod_delta", 0.0)
+        row["cf_planet_delta"] = deltas.get("cf_planet_delta", 0.0)
+        row["cf_survival"] = deltas.get("cf_survival", 1.0)
+        row["cf_crash"] = deltas.get("cf_crash", 0.0)
         rows.append(row)
     return rows
 
@@ -1078,7 +1140,7 @@ def relabel_rows_with_outcome(rows, agent_reward, opponent_reward, margin, resul
             row["phase_kind_attack_endgame"] = 1.0 if is_kind(row, "attack") and row_float(row, "phase_endgame") >= 0.5 else 0.0
             row["phase_kind_comet_midgame"] = 1.0 if comet and row_float(row, "phase_midgame") >= 0.5 else 0.0
             row["phase_kind_defend_under_pressure"] = 1.0 if tactical and row_float(row, "enemy_pressure") > 0.45 else 0.0
-            row["version"] = VERSION
+            row["version"] = row.get("version", VERSION_LEGACY)
     return dict(failure_counts)
 
 
@@ -1094,11 +1156,17 @@ class CsvRecorder:
     def log(self, obs):
         if self.args.max_rows and self.rows_written >= self.args.max_rows:
             return
+        mode = getattr(self.args, "mode", "legacy")
+        rollout_turns = getattr(self.args, "rollout_turns", DEFAULT_ROLLOUT_TURNS)
+        rollout_candidates = getattr(self.args, "rollout_candidates", DEFAULT_ROLLOUT_CANDIDATES)
         rows = candidate_rows_from_obs(
             obs,
             self.current_game_id,
             self.args.max_candidates_per_turn,
             not self.args.no_deep_planner,
+            mode=mode,
+            rollout_turns=rollout_turns,
+            rollout_candidates=rollout_candidates,
         )
         if not rows:
             return
@@ -1160,6 +1228,9 @@ def generate_game_rows(task):
         max_candidates_per_turn,
         use_deep_planner,
         show_env_imports,
+        mode,
+        rollout_turns,
+        rollout_candidates,
     ) = task
     load_runtime(show_env_imports)
     opponent = resolve_opponent(opponent_name)
@@ -1178,6 +1249,9 @@ def generate_game_rows(task):
             game_id,
             max_candidates_per_turn,
             use_deep_planner,
+            mode=mode,
+            rollout_turns=rollout_turns,
+            rollout_candidates=rollout_candidates,
         )
         if turn_rows:
             turns_logged += 1
@@ -1219,6 +1293,9 @@ def generate_game_rows(task):
 
 
 def iter_tasks(args):
+    mode = getattr(args, "mode", "legacy")
+    rollout_turns = getattr(args, "rollout_turns", DEFAULT_ROLLOUT_TURNS)
+    rollout_candidates = getattr(args, "rollout_candidates", DEFAULT_ROLLOUT_CANDIDATES)
     for index in range(args.games):
         seed = args.seed_start + index
         opponent_name = args.opponents[index % len(args.opponents)]
@@ -1229,6 +1306,9 @@ def iter_tasks(args):
             args.max_candidates_per_turn,
             not args.no_deep_planner,
             args.show_env_imports,
+            mode,
+            rollout_turns,
+            rollout_candidates,
         )
         if args.both_sides:
             yield (
@@ -1238,6 +1318,9 @@ def iter_tasks(args):
                 args.max_candidates_per_turn,
                 not args.no_deep_planner,
                 args.show_env_imports,
+                mode,
+                rollout_turns,
+                rollout_candidates,
             )
 
 
@@ -1312,7 +1395,17 @@ def save_progress(run_dir, game_id):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Generate Orbit Wars v7 counterfactual candidate training data.")
+    parser = argparse.ArgumentParser(description="Generate Orbit Wars training data (v7 legacy or v19 counterfactual RL).")
+    parser.add_argument(
+        "--mode",
+        choices=["legacy", "rl-counterfactual"],
+        default="legacy",
+        help="Data generation mode. 'legacy' produces v7-format CSV; 'rl-counterfactual' adds shallow rollout deltas.",
+    )
+    parser.add_argument("--rollout-turns", type=int, default=DEFAULT_ROLLOUT_TURNS,
+                        help="Number of turns to project forward in counterfactual rollouts (v19 mode only).")
+    parser.add_argument("--rollout-candidates", type=int, default=DEFAULT_ROLLOUT_CANDIDATES,
+                        help="Number of top candidates to run rollouts for per turn (v19 mode only).")
     parser.add_argument("--games", type=int, default=500)
     parser.add_argument("--seed-start", type=int, default=1)
     parser.add_argument(
