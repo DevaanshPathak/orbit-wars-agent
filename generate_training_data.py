@@ -18,9 +18,16 @@ from pathlib import Path
 
 HF_REPO_ID = "devaanshpa/orbit-wars-agent"
 HF_REPO_TYPE = "model"
-VERSION = "v7_counterfactual_teacher"
-CSV_BASENAME = "candidates_v7.csv"
+VERSION_LEGACY = "v7_counterfactual_teacher"
+VERSION_V19 = "v19_counterfactual_rl"
+CSV_BASENAME_LEGACY = "candidates_v7.csv"
+CSV_BASENAME_V19 = "candidates_v19.csv"
 PROGRESS_BASENAME = "progress.txt"
+
+# Rollout configuration defaults
+DEFAULT_ROLLOUT_TURNS = 25
+DEFAULT_ROLLOUT_CANDIDATES = 6
+ROLLOUT_OPPONENT_DEFAULT = "nearest"
 
 make = None
 Planet = None
@@ -129,6 +136,11 @@ METADATA_FIELDS = [
     "failure_missed_tactical",
     "failure_missed_comet",
     "failure_slow_expansion",
+    "cf_margin_delta",
+    "cf_prod_delta",
+    "cf_planet_delta",
+    "cf_survival",
+    "cf_crash",
     "game_id",
     "candidate_id",
     "version",
