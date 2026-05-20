@@ -1452,6 +1452,9 @@ def main_cli():
     if args.workers < 1:
         raise ValueError("--workers must be >= 1")
     load_runtime(args.show_env_imports)
+    is_v19 = getattr(args, "mode", "legacy") == "rl-counterfactual"
+    csv_basename = CSV_BASENAME_V19 if is_v19 else CSV_BASENAME_LEGACY
+    version = VERSION_V19 if is_v19 else VERSION_LEGACY
     run_start_timestamp = (
         args.run_start_timestamp
         or args.timestamp
@@ -1459,7 +1462,9 @@ def main_cli():
     )
     run_dir = Path(args.output_root) / run_start_timestamp
     run_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = run_dir / CSV_BASENAME
+    csv_path = run_dir / csv_basename
+    if is_v19:
+        print(f"v19 counterfactual RL mode: rollout_turns={args.rollout_turns} rollout_candidates={args.rollout_candidates}", flush=True)
 
     completed_game_ids = set()
     if args.resume:
@@ -1575,7 +1580,8 @@ def main_cli():
                         break
 
     manifest = {
-        "version": VERSION,
+        "version": version,
+        "mode": args.mode,
         "run_start_timestamp": run_start_timestamp,
         "timestamp": run_start_timestamp,
         "games_requested": args.games,
@@ -1590,12 +1596,15 @@ def main_cli():
         "failure_totals": dict(failure_totals),
         "turns_logged": turns_logged,
         "csv_path": str(csv_path),
-        "csv_basename": CSV_BASENAME,
-        "label_strategy": "turn_delta_counterfactual_pairwise_rank",
+        "csv_basename": csv_basename,
+        "label_strategy": "turn_delta_counterfactual_pairwise_rank" if not is_v19 else "counterfactual_rollout_delta",
         "duration_seconds": round(time.time() - started_at, 3),
         "feature_fields": FEATURE_FIELDS,
         "metadata_fields": METADATA_FIELDS,
     }
+    if is_v19:
+        manifest["rollout_turns"] = args.rollout_turns
+        manifest["rollout_candidates"] = args.rollout_candidates
     (run_dir / "manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True),
         encoding="utf-8",
