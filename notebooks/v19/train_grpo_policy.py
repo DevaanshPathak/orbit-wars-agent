@@ -13,7 +13,7 @@ HF_REPO_ID = "devaanshpa/orbit-wars-agent"
 HF_REPO_TYPE = "model"
 SFT_REMOTE_PREFIX = "v19/sft"
 GRPO_REMOTE_PREFIX = "v19/grpo"
-PINNED_DATASET = "data/20260517_074915/candidates_v19.csv"
+PINNED_DATASET = "data/20260520_061012/candidates_v19.csv"
 
 METADATA_COLS = {
     "label",
@@ -54,22 +54,22 @@ def parse_args():
     parser.add_argument("--csv", default=os.environ.get("CANDIDATES_CSV", ""))
     parser.add_argument(
         "--data-remote-path",
-        default=os.environ.get("v19_GRPO_DATA_REMOTE_PATH", PINNED_DATASET),
-        help="Optional exact Hugging Face repo path for candidates_v19.csv. Defaults to the pinned v17/v19 dataset.",
+        default=os.environ.get("V19_GRPO_DATA_REMOTE_PATH", os.environ.get("v19_GRPO_DATA_REMOTE_PATH", PINNED_DATASET)),
+        help="Optional exact Hugging Face repo path for candidates_v19.csv. Defaults to the pinned v19 dataset.",
     )
     parser.add_argument(
         "--prefer-local-data",
         action="store_true",
-        help="Use a local candidates_v19.csv/candidates_v19.csv before trying Hugging Face. Default is Hugging Face.",
+        help="Use a local candidates_v19.csv before trying Hugging Face. Default is Hugging Face.",
     )
     parser.add_argument(
         "--sft-artifact",
-        default=os.environ.get("v19_SFT_ARTIFACT", ""),
+        default=os.environ.get("V19_SFT_ARTIFACT", os.environ.get("v19_SFT_ARTIFACT", "")),
         help="Optional local SFT JSON override. By default GRPO downloads the SFT artifact from Hugging Face.",
     )
     parser.add_argument(
         "--sft-remote-path",
-        default=os.environ.get("v19_SFT_REMOTE_PATH", f"{SFT_REMOTE_PREFIX}/model_weights_v19_sft.json"),
+        default=os.environ.get("V19_SFT_REMOTE_PATH", os.environ.get("v19_SFT_REMOTE_PATH", f"{SFT_REMOTE_PREFIX}/model_weights_v19_sft.json")),
         help="Hugging Face repo path for the SFT artifact used by GRPO.",
     )
     parser.add_argument(
@@ -78,21 +78,21 @@ def parse_args():
         help="Use notebooks/v19/exports/sft/model_weights_v19_sft.json before trying Hugging Face.",
     )
     parser.add_argument("--export-dir", default="notebooks/v19/exports/grpo")
-    parser.add_argument("--epochs", type=int, default=int(os.environ.get("v19_GRPO_EPOCHS", "160")))
-    parser.add_argument("--batch-groups", type=int, default=int(os.environ.get("v19_GRPO_BATCH_GROUPS", "192")))
-    parser.add_argument("--samples-per-group", type=int, default=int(os.environ.get("v19_GRPO_SAMPLES", "12")))
-    parser.add_argument("--temperature", type=float, default=float(os.environ.get("v19_GRPO_TEMPERATURE", "0.85")))
-    parser.add_argument("--lr", type=float, default=float(os.environ.get("v19_GRPO_LR", "0.00018")))
-    parser.add_argument("--weight-decay", type=float, default=float(os.environ.get("v19_GRPO_WEIGHT_DECAY", "0.00018")))
-    parser.add_argument("--kl-weight", type=float, default=float(os.environ.get("v19_GRPO_KL_WEIGHT", "0.10")))
-    parser.add_argument("--entropy-weight", type=float, default=float(os.environ.get("v19_GRPO_ENTROPY_WEIGHT", "0.018")))
-    parser.add_argument("--supervised-anchor", type=float, default=float(os.environ.get("v19_GRPO_SUPERVISED_ANCHOR", "0.22")))
-    parser.add_argument("--patience", type=int, default=int(os.environ.get("v19_GRPO_PATIENCE", "36")))
-    parser.add_argument("--checkpoint-every", type=int, default=int(os.environ.get("v19_GRPO_CHECKPOINT_EVERY", "30")))
+    parser.add_argument("--epochs", type=int, default=int(os.environ.get("V19_GRPO_EPOCHS", os.environ.get("v19_GRPO_EPOCHS", "50"))))
+    parser.add_argument("--batch-groups", type=int, default=int(os.environ.get("V19_GRPO_BATCH_GROUPS", os.environ.get("v19_GRPO_BATCH_GROUPS", "192"))))
+    parser.add_argument("--samples-per-group", type=int, default=int(os.environ.get("V19_GRPO_SAMPLES", os.environ.get("v19_GRPO_SAMPLES", "12"))))
+    parser.add_argument("--temperature", type=float, default=float(os.environ.get("V19_GRPO_TEMPERATURE", os.environ.get("v19_GRPO_TEMPERATURE", "0.85"))))
+    parser.add_argument("--lr", type=float, default=float(os.environ.get("V19_GRPO_LR", os.environ.get("v19_GRPO_LR", "0.00035"))))
+    parser.add_argument("--weight-decay", type=float, default=float(os.environ.get("V19_GRPO_WEIGHT_DECAY", os.environ.get("v19_GRPO_WEIGHT_DECAY", "0.00018"))))
+    parser.add_argument("--kl-weight", type=float, default=float(os.environ.get("V19_GRPO_KL_WEIGHT", os.environ.get("v19_GRPO_KL_WEIGHT", "0.15"))))
+    parser.add_argument("--entropy-weight", type=float, default=float(os.environ.get("V19_GRPO_ENTROPY_WEIGHT", os.environ.get("v19_GRPO_ENTROPY_WEIGHT", "0.018"))))
+    parser.add_argument("--supervised-anchor", type=float, default=float(os.environ.get("V19_GRPO_SUPERVISED_ANCHOR", os.environ.get("v19_GRPO_SUPERVISED_ANCHOR", "0.18"))))
+    parser.add_argument("--patience", type=int, default=int(os.environ.get("V19_GRPO_PATIENCE", os.environ.get("v19_GRPO_PATIENCE", "36"))))
+    parser.add_argument("--checkpoint-every", type=int, default=int(os.environ.get("V19_GRPO_CHECKPOINT_EVERY", os.environ.get("v19_GRPO_CHECKPOINT_EVERY", "30"))))
     parser.add_argument(
         "--device",
         choices=("cuda", "cpu", "auto"),
-        default=os.environ.get("v19_DEVICE", "cuda"),
+        default=os.environ.get("V19_DEVICE", os.environ.get("v19_DEVICE", "cuda")),
         help="Training device. Defaults to CUDA for Kaggle 2*T4 runs.",
     )
     parser.add_argument("--seed", type=int, default=1819)
@@ -165,7 +165,6 @@ def find_training_csv(csv_arg, remote_path="", prefer_local=False, repo_id=HF_RE
     root = Path("data")
     candidates = []
     if root.exists():
-        candidates.extend(root.glob("*/candidates_v19.csv"))
         candidates.extend(root.glob("*/candidates_v19.csv"))
     if candidates:
         return sorted(candidates, key=lambda path: path.stat().st_mtime, reverse=True)[0]

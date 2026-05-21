@@ -3,6 +3,7 @@
 ## v19 - Counterfactual RL
 
 - Added `--mode rl-counterfactual` to `generate_training_data.py` to collect shallow causal rollouts (25-turn projections) and capture exact advantage deltas (`cf_margin_delta`, `cf_prod_delta`, `cf_planet_delta`) per candidate, replacing legacy static heuristics.
+- Pinned v19 SFT/GRPO training to the counterfactual dataset at `devaanshpa/orbit-wars-agent/data/20260520_061012/candidates_v19.csv`.
 - Added explicit experimental candidate generators (comet denial, split reserve expansion, delayed attacks) that fire during data generation to broaden the counterfactual action space.
 - Added `notebooks/v19/train_sft_policy.py` which transitions target generation from static heuristic selected-labels to a counterfactual-weighted cross-entropy loss, aggressively prioritizing candidates that show positive causal rollout metrics.
 - Added `notebooks/v19/train_grpo_policy.py` which updates the candidate reward components to directly use counterfactual deltas (`cf_margin_delta`, `cf_survival`, `cf_crash`) rather than just heuristic labels and static turn advantages.

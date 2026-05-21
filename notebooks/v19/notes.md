@@ -27,7 +27,7 @@ For each turn, the top N candidates (default 6) are projected forward 25 turns u
 Default data source:
 
 ```text
-devaanshpa/orbit-wars-agent/data/<timestamp>/candidates_v19.csv
+devaanshpa/orbit-wars-agent/data/20260520_061012/candidates_v19.csv
 ```
 
 Generate with:
@@ -63,7 +63,7 @@ set CANDIDATES_CSV=path\to\candidates_v19.csv
 ## Run Order
 
 1. Generate data: `python generate_training_data.py --mode rl-counterfactual --games 500 --no-upload`
-2. Upload data to HF
+2. Upload data to HF path `data/20260520_061012/`
 3. Add Kaggle Secret `HF_TOKEN`
 4. Run `sft_training_policy.ipynb`
 5. Confirm upload of `v19/sft/model_weights_v19_sft.json`

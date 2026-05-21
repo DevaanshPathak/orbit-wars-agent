@@ -12,7 +12,7 @@ from pathlib import Path
 HF_REPO_ID = "devaanshpa/orbit-wars-agent"
 HF_REPO_TYPE = "model"
 HF_REMOTE_PREFIX = "v19/sft"
-PINNED_DATASET = ""  # v19 data path set after generation; use --csv or --data-remote-path
+PINNED_DATASET = "data/20260520_061012/candidates_v19.csv"
 
 METADATA_COLS = {
     "label",
@@ -124,12 +124,12 @@ def download_training_csv(remote_path, repo_id=HF_REPO_ID, repo_type=HF_REPO_TYP
             [
                 name
                 for name in files
-                if name.startswith("data/") and (name.endswith("/candidates_v19.csv") or name.endswith("/candidates_v7.csv"))
+                if name.startswith("data/") and name.endswith("/candidates_v19.csv")
             ],
             reverse=True,
         )
         if not remote_csvs:
-            raise FileNotFoundError("No data/*/candidates_v19.csv or candidates_v7.csv found in Hugging Face repo.")
+            raise FileNotFoundError("No data/*/candidates_v19.csv found in Hugging Face repo.")
         remote_path = remote_csvs[0]
 
     return Path(
@@ -155,7 +155,6 @@ def find_training_csv(csv_arg, remote_path="", prefer_local=False):
     local_candidates = []
     for pattern in (
         "notebooks/v19/data/candidates_v19.csv",
-        "notebooks/v19/data/candidates_v7.csv",
     ):
         path = Path(pattern)
         if path.exists():
@@ -164,7 +163,6 @@ def find_training_csv(csv_arg, remote_path="", prefer_local=False):
     root = Path("data")
     if root.exists():
         local_candidates.extend(root.glob("*/candidates_v19.csv"))
-        local_candidates.extend(root.glob("*/candidates_v7.csv"))
     if local_candidates:
         return sorted(local_candidates, key=lambda path: path.stat().st_mtime, reverse=True)[0]
 
@@ -668,7 +666,7 @@ def train(args):
         json.dumps(
             {
                 "csv": str(data_path),
-                "data_remote_path": args.data_remote_path or "latest data/*/candidates_v7.csv",
+                "data_remote_path": args.data_remote_path or "latest data/*/candidates_v19.csv",
                 "data_source": "local_override" if args.csv else ("local_preferred" if args.prefer_local_data else "hugging_face"),
                 "rows": len(rows),
                 "features": len(feature_names),
