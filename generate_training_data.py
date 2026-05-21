@@ -20,8 +20,10 @@ HF_REPO_ID = "devaanshpa/orbit-wars-agent"
 HF_REPO_TYPE = "model"
 VERSION_LEGACY = "v7_counterfactual_teacher"
 VERSION_V19 = "v19_counterfactual_rl"
+VERSION_V20 = "v20_conservative_counterfactual_rl"
 CSV_BASENAME_LEGACY = "candidates_v7.csv"
 CSV_BASENAME_V19 = "candidates_v19.csv"
+CSV_BASENAME_V20 = "candidates_v20.csv"
 PROGRESS_BASENAME = "progress.txt"
 
 # Rollout configuration defaults
@@ -425,8 +427,8 @@ def candidate_rows_from_obs(obs, game_id, max_candidates_per_turn, use_deep_plan
     if not state.my_planets:
         return []
 
-    is_v19 = mode == "rl-counterfactual"
-    version = VERSION_V19 if is_v19 else VERSION_LEGACY
+    is_v19 = mode in {"rl-counterfactual", "rl-counterfactual-v20"}
+    version = VERSION_V20 if mode == "rl-counterfactual-v20" else (VERSION_V19 if is_v19 else VERSION_LEGACY)
 
     policy = main._build_policy(state)
     available = dict(policy["attack_budget"])
@@ -1066,6 +1068,18 @@ def relabel_rows_with_outcome(rows, agent_reward, opponent_reward, margin, resul
             comet = is_kind(row, "comet")
             opening_expand = is_kind(row, "expand") and row_float(row, "phase_opening") >= 0.5
             expensive_commit = row_float(row, "source_commit_fraction") > 0.78 or row_float(row, "ship_cost_fraction") > 0.28
+            is_v20_row = row.get("version") == VERSION_V20
+            cf_margin = row_float(row, "cf_margin_delta", 0.0)
+            cf_prod = row_float(row, "cf_prod_delta", 0.0)
+            cf_planet = row_float(row, "cf_planet_delta", 0.0)
+            cf_crash = row_float(row, "cf_crash", 0.0) >= 0.5
+            cf_survived = row_float(row, "cf_survival", 1.0) >= 0.5
+            rollout_positive = (
+                is_v20_row
+                and not cf_crash
+                and cf_survived
+                and (cf_margin >= 6.0 or cf_prod >= 0.75 or cf_planet >= 0.75)
+            )
             counterfactual = False
             reason = ""
 
@@ -1083,6 +1097,10 @@ def relabel_rows_with_outcome(rows, agent_reward, opponent_reward, margin, resul
                     label = min(label, 0.22)
                     weight += 0.70
                     failure_counts["overcommit"] += 1
+                if is_v20_row and (cf_crash or cf_margin <= -18.0):
+                    label = min(label, 0.26)
+                    weight += 0.80
+                    failure_counts["bad_rollout_selected"] += 1
                 if tactical and delta_15 >= -8.0:
                     label = max(label, 0.68)
                     weight += 0.55
@@ -1109,6 +1127,24 @@ def relabel_rows_with_outcome(rows, agent_reward, opponent_reward, margin, resul
                         label = 0.64
                         weight += 0.35
                         failure_counts["slow_expansion"] += 1
+                if rollout_positive:
+                    counterfactual = True
+                    reason = reason or "positive_rollout_delta"
+                    label = max(
+                        label,
+                        0.60
+                        + min(0.18, max(0.0, cf_margin) / 95.0)
+                        + min(0.08, max(0.0, cf_prod) / 24.0)
+                        + min(0.08, max(0.0, cf_planet) / 8.0),
+                    )
+                    weight = max(
+                        weight,
+                        1.10
+                        + min(1.20, max(0.0, cf_margin) / 70.0)
+                        + min(0.55, max(0.0, cf_prod) / 10.0)
+                        + min(0.45, max(0.0, cf_planet) / 3.0),
+                    )
+                    failure_counts["positive_rollout_delta"] += 1
 
             row["label"] = round(max(0.0, min(1.0, label)), 6)
             row["outcome_weight"] = round(max(0.05, weight), 6)
@@ -1395,17 +1431,17 @@ def save_progress(run_dir, game_id):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Generate Orbit Wars training data (v7 legacy or v19 counterfactual RL).")
+    parser = argparse.ArgumentParser(description="Generate Orbit Wars training data (v7 legacy, v19 counterfactual RL, or v20 conservative counterfactual RL).")
     parser.add_argument(
         "--mode",
-        choices=["legacy", "rl-counterfactual"],
+        choices=["legacy", "rl-counterfactual", "rl-counterfactual-v20"],
         default="legacy",
-        help="Data generation mode. 'legacy' produces v7-format CSV; 'rl-counterfactual' adds shallow rollout deltas.",
+        help="Data generation mode. v20 mode writes candidates_v20.csv and treats positive rollout deltas as direct counterfactual positives.",
     )
     parser.add_argument("--rollout-turns", type=int, default=DEFAULT_ROLLOUT_TURNS,
-                        help="Number of turns to project forward in counterfactual rollouts (v19 mode only).")
+                        help="Number of turns to project forward in counterfactual rollout modes.")
     parser.add_argument("--rollout-candidates", type=int, default=DEFAULT_ROLLOUT_CANDIDATES,
-                        help="Number of top candidates to run rollouts for per turn (v19 mode only).")
+                        help="Number of top candidates to run rollouts for per turn in counterfactual modes.")
     parser.add_argument("--games", type=int, default=500)
     parser.add_argument("--seed-start", type=int, default=1)
     parser.add_argument(
@@ -1452,9 +1488,16 @@ def main_cli():
     if args.workers < 1:
         raise ValueError("--workers must be >= 1")
     load_runtime(args.show_env_imports)
-    is_v19 = getattr(args, "mode", "legacy") == "rl-counterfactual"
-    csv_basename = CSV_BASENAME_V19 if is_v19 else CSV_BASENAME_LEGACY
-    version = VERSION_V19 if is_v19 else VERSION_LEGACY
+    mode = getattr(args, "mode", "legacy")
+    is_counterfactual = mode in {"rl-counterfactual", "rl-counterfactual-v20"}
+    is_v20 = mode == "rl-counterfactual-v20"
+    if is_v20:
+        if args.rollout_turns == DEFAULT_ROLLOUT_TURNS:
+            args.rollout_turns = 35
+        if args.rollout_candidates == DEFAULT_ROLLOUT_CANDIDATES:
+            args.rollout_candidates = 10
+    csv_basename = CSV_BASENAME_V20 if is_v20 else (CSV_BASENAME_V19 if is_counterfactual else CSV_BASENAME_LEGACY)
+    version = VERSION_V20 if is_v20 else (VERSION_V19 if is_counterfactual else VERSION_LEGACY)
     run_start_timestamp = (
         args.run_start_timestamp
         or args.timestamp
@@ -1463,8 +1506,8 @@ def main_cli():
     run_dir = Path(args.output_root) / run_start_timestamp
     run_dir.mkdir(parents=True, exist_ok=True)
     csv_path = run_dir / csv_basename
-    if is_v19:
-        print(f"v19 counterfactual RL mode: rollout_turns={args.rollout_turns} rollout_candidates={args.rollout_candidates}", flush=True)
+    if is_counterfactual:
+        print(f"{mode} mode: rollout_turns={args.rollout_turns} rollout_candidates={args.rollout_candidates}", flush=True)
 
     completed_game_ids = set()
     if args.resume:
@@ -1597,12 +1640,14 @@ def main_cli():
         "turns_logged": turns_logged,
         "csv_path": str(csv_path),
         "csv_basename": csv_basename,
-        "label_strategy": "turn_delta_counterfactual_pairwise_rank" if not is_v19 else "counterfactual_rollout_delta",
+        "label_strategy": "turn_delta_counterfactual_pairwise_rank" if not is_counterfactual else (
+            "rollout_delta_direct_counterfactual_positive" if is_v20 else "counterfactual_rollout_delta"
+        ),
         "duration_seconds": round(time.time() - started_at, 3),
         "feature_fields": FEATURE_FIELDS,
         "metadata_fields": METADATA_FIELDS,
     }
-    if is_v19:
+    if is_counterfactual:
         manifest["rollout_turns"] = args.rollout_turns
         manifest["rollout_candidates"] = args.rollout_candidates
     (run_dir / "manifest.json").write_text(

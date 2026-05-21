@@ -1,5 +1,13 @@
 # Changelog
 
+## v20 - Conservative Counterfactual RL Safety Gate
+
+- Added `rl-counterfactual-v20` mode to `generate_training_data.py`; it writes `candidates_v20.csv`, uses longer default counterfactual rollouts, promotes positive rollout-delta alternatives, and downlabels selected candidates that crash or produce large negative rollout deltas.
+- Added `notebooks/v20/` with self-contained SFT and GRPO notebooks plus optional local trainer scripts.
+- v20 SFT defaults to the pinned uploaded `data/20260520_061012/candidates_v19.csv` dataset as an immediate fallback, while accepting `candidates_v20.csv` overrides from Hugging Face.
+- v20 GRPO starts from the SFT baseline, rejects unsafe epochs via validation top-1 and KL gates, caps model blend, and carries SFT ensemble members into the final artifact to avoid the v19 reward-overfitting failure mode.
+- Added v20 notebook notes documenting the recommended 2500-game v20 dataset command, HF upload paths, run order, and safety settings.
+
 ## v19 - Counterfactual RL
 
 - Added `--mode rl-counterfactual` to `generate_training_data.py` to collect shallow causal rollouts (25-turn projections) and capture exact advantage deltas (`cf_margin_delta`, `cf_prod_delta`, `cf_planet_delta`) per candidate, replacing legacy static heuristics.
